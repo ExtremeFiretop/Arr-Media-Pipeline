@@ -1,6 +1,6 @@
 # Arr Media Pipeline
 
-Policy-driven media validation, normalization, reconciliation, and lifecycle automation for **Radarr, Sonarr, Plex, and Reqestra**.
+Policy-driven media validation, normalization, reconciliation, and lifecycle automation for **Radarr, Sonarr, Plex, and Reqestra/Ombi**.
 
 > **Project status:** pre-1.0. Validation, context-aware planning, guarded normalization, queueing, reconciliation, backup retention, and gated automatic execution are implemented. Controlled reacquisition, deeper corruption analysis, subtitle lifecycle automation, and broader observability are still in development.
 
@@ -38,7 +38,7 @@ The project intentionally avoids mass transcoding and avoids permanently degradi
 ## Architecture
 
 ```text
-Reqestra
+Reqestra/Ombi
    |
 Radarr / Sonarr
    |
