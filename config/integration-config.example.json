@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0",
+  "radarr": {
+    "baseUrl": "",
+    "apiVersion": "auto",
+    "apiKey": ""
+  },
+  "sonarr": {
+    "baseUrl": "",
+    "apiVersion": "auto",
+    "apiKey": ""
+  }
+}

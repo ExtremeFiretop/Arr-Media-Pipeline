@@ -1,0 +1,50 @@
+{
+  "version": "1.1",
+  "video": {
+    "hardRejectCodecs": [
+      "av1",
+      "vvc",
+      "h266",
+      "x266"
+    ],
+    "dolbyVisionAction": "REACQUIRE"
+  },
+  "audio": {
+    "commentaryPatterns": [
+      "commentary",
+      "audio commentary",
+      "director commentary",
+      "directors commentary",
+      "cast commentary",
+      "crew commentary"
+    ]
+  },
+  "subtitles": {
+    "textCodecs": [
+      "subrip",
+      "srt",
+      "mov_text",
+      "webvtt",
+      "ass",
+      "ssa"
+    ],
+    "imageCodecs": [
+      "hdmv_pgs_subtitle",
+      "dvd_subtitle",
+      "dvb_subtitle"
+    ]
+  },
+  "audit": {
+    "extensions": [
+      ".mkv",
+      ".mp4",
+      ".m4v",
+      ".avi",
+      ".mov",
+      ".ts",
+      ".m2ts",
+      ".wmv",
+      ".webm"
+    ]
+  }
+}

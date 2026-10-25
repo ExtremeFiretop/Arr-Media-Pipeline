@@ -1,0 +1,9 @@
+{
+  "backupRetentionDays": 7,
+  "tempRetentionHours": 24,
+  "notes": {
+    "backupDeletion": "Deletion is allowed only after a successful EXECUTE result, successful Arr reconciliation, the retention period, a fresh PASS validation, and a current Arr path/size match.",
+    "ordinaryTemps": "Only ordinary .reqestra-<executionId>.tmp artifacts may expire.",
+    "failedReplacementTemps": ".reqestra-failed-<executionId>.tmp artifacts are never auto-deleted."
+  }
+}
