@@ -1,0 +1,33 @@
+# Live credentials / machine-local configuration
+**/integration-config.json
+**/normalization-worker-config.json
+**/maintenance-config.json
+
+# Runtime state
+**/Queue/
+**/Maintenance/
+**/logs/
+
+# Generated release output
+/dist/*
+!/dist/.gitkeep
+
+# Generated logs/results
+*.jsonl
+*.log
+
+# Normalization artifacts
+*.reqestra-*.tmp
+*.reqestra-backup-*.bak
+*.reqestra-failed-*.tmp
+
+# Local/editor/OS noise
+*.tmp
+*.bak
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+scratch/
+temp/
