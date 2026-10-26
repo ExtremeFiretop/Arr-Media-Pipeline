@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version Latest
@@ -29,7 +29,7 @@ $plannerText = Get-Content -LiteralPath $PlannerPath -Raw -Encoding UTF8
 $executorText = Get-Content -LiteralPath $ExecutorPath -Raw -Encoding UTF8
 $helperText = Get-Content -LiteralPath $HelperPath -Raw -Encoding UTF8
 
-Add-Test "Planner version is 0.1.1" ($plannerText -match '\$PlannerVersion\s*=\s*"0\.1\.1"')
+Add-Test "Planner version is 0.1.2" ($plannerText -match '\$PlannerVersion\s*=\s*"0\.1\.2"')
 Add-Test "Executor version is 0.2.7" ($executorText -match '\$ExecutorVersion\s*=\s*"0\.2\.7"')
 Add-Test "Planner exposes explicit operator escalation switch" ($plannerText -match 'OperatorEscalateNormalizeToReacquire')
 Add-Test "Planner requires a disposition reason" ($plannerText -match 'operator_disposition_reason_required')

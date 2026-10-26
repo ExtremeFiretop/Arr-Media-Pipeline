@@ -226,9 +226,9 @@ function Start-ReacquisitionQueueWorker {
         $p = New-Object System.Diagnostics.Process
         $p.StartInfo = $si
         [void]$p.Start()
-        $pid = $p.Id
+        $processId = $p.Id
         $p.Dispose()
-        return [pscustomobject]@{ started=$true; reason=$null; processId=$pid }
+        return [pscustomobject]@{ started=$true; reason=$null; processId=$processId }
     }
     catch { return [pscustomobject]@{ started=$false; reason=$_.Exception.Message; processId=$null } }
 }

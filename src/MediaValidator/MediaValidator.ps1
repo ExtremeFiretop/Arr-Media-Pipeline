@@ -37,7 +37,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ValidatorVersion = "0.2.8"
+$ValidatorVersion = "0.2.9"
 $SchemaVersion = "1.1"
 
 trap {
@@ -675,7 +675,7 @@ function Invoke-MediaValidation {
     $findings = @()
 
     if (-not [string]::IsNullOrWhiteSpace($probeStderr)) {
-        $findings += New-Finding -Severity "REVIEW" -Code "probe.diagnostic_error" -Message "ffprobe produced error-level diagnostics while still returning parseable media metadata." -Details @{
+        $findings += New-Finding -Severity "REACQUIRE" -Code "probe.diagnostic_error" -Message "ffprobe produced error-level diagnostics while still returning parseable media metadata; treat the current source as defective and reacquire it." -Details @{
             stderr = $probeStderr.Trim()
             exitCode = $ffprobeExitCode
         }

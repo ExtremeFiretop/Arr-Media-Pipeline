@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("AUTO_DRY_RUN","AUTO_EXECUTE")]
@@ -28,7 +28,9 @@ $config = [ordered]@{
     felResidualDiscardAcknowledgement = if ($EnableFelResidualDiscard) { "REQESTRA_AUTO_FEL_DISCARDS_DOLBY_VISION_RESIDUAL" } else { "" }
 }
 
-$path = Join-Path $PSScriptRoot "reacquisition-worker-config.json"
+$ToolsRoot = $PSScriptRoot
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
+$path = Join-Path $IntegrationRoot "reacquisition-worker-config.json"
 $config | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding UTF8
 Write-Host "Reacquisition worker configuration written: $path"
 Write-Host "Mode: $Mode"

@@ -14,7 +14,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $BatchVersion = "0.1.1"
-$IntegrationRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ToolsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorScript = Join-Path $ValidatorRoot "MediaValidator.ps1"
 $PlannerScript = Join-Path $IntegrationRoot "NormalizationPlanner.ps1"

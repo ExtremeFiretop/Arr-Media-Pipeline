@@ -14,6 +14,8 @@ These scripts are intentionally separated from production import/runtime logic.
 
 It reconstructs Radarr/Sonarr context and feeds every existing Arr-owned file through `ReqestraArrBridge.ps1`, so the same production normalization/reacquisition logic is used. Progress is checkpointed under `Integration\Audit\library-remediation`; rerunning the same command resumes an incomplete run. Use `-Fresh` only when you intentionally want a new scan.
 
+After a completed run, `-RetryActionable` re-submits only the previous run's `NORMALIZE`, `REACQUIRE`, and `REVIEW` items. This is the supported way to retry a completed library pass after a policy/runtime fix without rescanning its PASS population. It cannot be combined with `-Fresh` or `-MaxItems`.
+
 `-MovieId`, `-SeriesId`, and `-MaxItems` are diagnostic/development filters, not part of the normal operator workflow.
 
 ## Other tools

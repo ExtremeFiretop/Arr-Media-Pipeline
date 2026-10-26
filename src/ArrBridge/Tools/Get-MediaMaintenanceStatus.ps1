@@ -7,7 +7,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$MaintenanceRoot = Join-Path $PSScriptRoot "Maintenance"
+$ToolsRoot = $PSScriptRoot
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
+$MaintenanceRoot = Join-Path $IntegrationRoot "Maintenance"
 $ReportsRoot = Join-Path $MaintenanceRoot "reports"
 $AuditLog = Join-Path $MaintenanceRoot "maintenance.jsonl"
 

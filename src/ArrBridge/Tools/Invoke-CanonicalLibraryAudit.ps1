@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("Movies","TV","All")]
     [string]$Library = "All",
@@ -16,7 +16,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$IntegrationRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ToolsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorPath = Join-Path $ValidatorRoot "MediaValidator.ps1"
 

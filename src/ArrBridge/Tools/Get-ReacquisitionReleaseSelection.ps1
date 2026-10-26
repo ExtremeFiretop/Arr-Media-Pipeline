@@ -14,7 +14,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptVersion = "0.1.1"
-$IntegrationRoot = $PSScriptRoot
+$ToolsRoot = $PSScriptRoot
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
 $ConfigPath = Join-Path $IntegrationRoot "integration-config.json"
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
 $SelectorPath = Join-Path $IntegrationRoot "ReacquisitionReleaseSelector.ps1"

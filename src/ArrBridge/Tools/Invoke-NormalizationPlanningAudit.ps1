@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$AuditCsv = "",
     [string[]]$AdditionalPath = @(),
@@ -9,7 +9,8 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ScriptVersion = "0.1.0"
-$IntegrationRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ToolsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorScript = Join-Path $ValidatorRoot "MediaValidator.ps1"
 $PlannerScript = Join-Path $IntegrationRoot "NormalizationPlanner.ps1"

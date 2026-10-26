@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$BridgeVersion = "0.9.26"
+$BridgeVersion = "0.9.27"
 $Prefix = $Source.ToLowerInvariant() + "_"
 $IntegrationRoot = $PSScriptRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
@@ -731,7 +731,6 @@ function Invoke-NormalizationPlannerProcess {
         [Parameter(Mandatory = $true)][string]$ContextPath,
         [Parameter(Mandatory = $true)][string]$ValidatorResultPath,
         [string]$ContextualResultPath,
-        [string]$AutomaticEscalationReason = "",
         [Parameter(Mandatory = $true)][string]$JsonOutPath,
         [Parameter(Mandatory = $true)][string]$StdoutPath,
         [Parameter(Mandatory = $true)][string]$StderrPath
@@ -753,10 +752,6 @@ function Invoke-NormalizationPlannerProcess {
     if (-not [string]::IsNullOrWhiteSpace($ContextualResultPath)) {
         $arguments += @("-ContextualResultPath", $ContextualResultPath)
     }
-    if (-not [string]::IsNullOrWhiteSpace($AutomaticEscalationReason)) {
-        $arguments += @("-AutomaticEscalationReason", $AutomaticEscalationReason)
-    }
-
     $arguments += @("-JsonOut", $JsonOutPath)
 
     $argumentString = (@($arguments | ForEach-Object { Quote-ProcessArgument ([string]$_) })) -join " "
@@ -794,6 +789,7 @@ function Invoke-ReacquisitionPlannerProcess {
         [Parameter(Mandatory = $true)][string]$ContextPath,
         [Parameter(Mandatory = $true)][string]$ValidatorResultPath,
         [string]$ContextualResultPath,
+        [string]$AutomaticEscalationReason = "",
         [Parameter(Mandatory = $true)][string]$JsonOutPath,
         [Parameter(Mandatory = $true)][string]$StdoutPath,
         [Parameter(Mandatory = $true)][string]$StderrPath
@@ -814,6 +810,9 @@ function Invoke-ReacquisitionPlannerProcess {
 
     if (-not [string]::IsNullOrWhiteSpace($ContextualResultPath)) {
         $arguments += @("-ContextualResultPath", $ContextualResultPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AutomaticEscalationReason)) {
+        $arguments += @("-AutomaticEscalationReason", $AutomaticEscalationReason)
     }
 
     $arguments += @("-JsonOut", $JsonOutPath)
@@ -1291,37 +1290,60 @@ try {
     $reacquisitionJobQueued = $false
 
     if ($record.status -eq "VALIDATED") {
-        try {
-            $rq = Enqueue-ReacquisitionBridgeEvent `
-                -IntegrationRoot $IntegrationRoot `
-                -Source $Source `
-                -EventId $eventId `
-                -BridgeResultPath $bridgeResultPath `
-                -EffectiveOutcome ([string]$record.effectiveOutcome)
+        $activeReacquisitionChainForQueue = Test-ActiveReacquisitionChain -Context $context
+        $shouldQueueReacquisition = (
+            [string]$record.effectiveOutcome -eq "REACQUIRE" -or
+            $activeReacquisitionChainForQueue
+        )
 
-            $record.reacquisitionQueue = [ordered]@{
-                status = [string]$rq.status
-                reason = $rq.reason
-                jobId = $rq.jobId
-                jobFile = $rq.jobFile
-                queueMode = $rq.queueMode
-                requestedMode = $rq.requestedMode
-                configStatus = $rq.configStatus
-                workerStartRequested = ([string]$rq.status -eq "ENQUEUED")
+        if ($shouldQueueReacquisition) {
+            try {
+                $rq = Enqueue-ReacquisitionBridgeEvent `
+                    -IntegrationRoot $IntegrationRoot `
+                    -Source $Source `
+                    -EventId $eventId `
+                    -BridgeResultPath $bridgeResultPath `
+                    -EffectiveOutcome ([string]$record.effectiveOutcome)
+
+                $record.reacquisitionQueue = [ordered]@{
+                    status = [string]$rq.status
+                    reason = $rq.reason
+                    jobId = $rq.jobId
+                    jobFile = $rq.jobFile
+                    queueMode = $rq.queueMode
+                    requestedMode = $rq.requestedMode
+                    configStatus = $rq.configStatus
+                    activeChain = [bool]$activeReacquisitionChainForQueue
+                    workerStartRequested = ([string]$rq.status -eq "ENQUEUED")
+                }
+                $reacquisitionJobQueued = ([string]$rq.status -eq "ENQUEUED")
             }
-            $reacquisitionJobQueued = ([string]$rq.status -eq "ENQUEUED")
+            catch {
+                $record.reacquisitionQueue = [ordered]@{
+                    status = "QUEUE_ERROR"
+                    reason = $_.Exception.Message
+                    queueMode = "AUTO_DRY_RUN"
+                    activeChain = [bool]$activeReacquisitionChainForQueue
+                    workerStartRequested = $false
+                }
+                Add-Content -LiteralPath $ErrorLogPath -Value (
+                    "{0} [{1}] {2}: reacquisition queue error: {3}" -f
+                    ([DateTime]::UtcNow.ToString("o")), $Source, $eventId, $_.Exception.Message
+                ) -Encoding UTF8
+            }
         }
-        catch {
+        else {
             $record.reacquisitionQueue = [ordered]@{
-                status = "QUEUE_ERROR"
-                reason = $_.Exception.Message
-                queueMode = "AUTO_DRY_RUN"
+                status = "NOT_APPLICABLE"
+                reason = "no_reacquisition_outcome_or_active_chain"
+                jobId = $null
+                jobFile = $null
+                queueMode = $null
+                requestedMode = $null
+                configStatus = $null
+                activeChain = $false
                 workerStartRequested = $false
             }
-            Add-Content -LiteralPath $ErrorLogPath -Value (
-                "{0} [{1}] {2}: reacquisition queue error: {3}" -f
-                ([DateTime]::UtcNow.ToString("o")), $Source, $eventId, $_.Exception.Message
-            ) -Encoding UTF8
         }
     }
 

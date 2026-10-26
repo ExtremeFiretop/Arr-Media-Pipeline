@@ -1,6 +1,6 @@
 # Integration runtime
 
-This directory is the production runtime surface for Arr Media Pipeline v0.9.29.11.
+This directory is the production runtime surface for Arr Media Pipeline v0.9.29.13.
 
 ## Automatic production entry points
 
@@ -40,5 +40,11 @@ Human-invoked tools live under `Tools/`. The one-time existing-library entry poi
 ```
 
 The command feeds existing files through the same bridge and workers used by future Arr imports. It is resumable after interruption and does not contain a separate remediation policy.
+
+After a completed run, use `-RetryActionable` to re-submit only the previous run's non-PASS actionable items (`NORMALIZE`, `REACQUIRE`, or `REVIEW`) after a policy/runtime fix, instead of rescanning the whole library:
+
+```powershell
+.\Integration\Tools\Invoke-LibraryRemediation.ps1 -Library Movies -RetryActionable
+```
 
 Development tests live under `Development/Tests` and are not required in the production Integration root.

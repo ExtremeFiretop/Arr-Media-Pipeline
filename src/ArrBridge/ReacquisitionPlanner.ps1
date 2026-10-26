@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$PlannerVersion = "0.1.1"
+$PlannerVersion = "0.1.2"
 
 function Get-PropertyValue {
     param(
@@ -271,7 +271,8 @@ $supportedCodes = @(
     "video.dolby_vision",
     "video.codec_prohibited",
     "audio.missing",
-    "language.preferred_missing"
+    "language.preferred_missing",
+    "probe.diagnostic_error"
 )
 
 $triggerFindings = if ($automaticEscalationApplied) {

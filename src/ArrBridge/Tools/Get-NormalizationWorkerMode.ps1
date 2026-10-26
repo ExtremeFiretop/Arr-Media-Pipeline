@@ -4,7 +4,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$IntegrationRoot = $PSScriptRoot
+$ToolsRoot = $PSScriptRoot
+$IntegrationRoot = Split-Path -Parent $ToolsRoot
 . (Join-Path $IntegrationRoot "QueueCommon.ps1")
 
 $settings = Get-NormalizationWorkerSettings -IntegrationRoot $IntegrationRoot

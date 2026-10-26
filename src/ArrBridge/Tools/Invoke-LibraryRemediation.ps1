@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet("Movies","TV","Both")]
     [string]$Library = "Movies",
@@ -9,13 +9,15 @@ param(
     [ValidateRange(0,1000000)]
     [int]$MaxItems = 0,
 
-    [switch]$Fresh
+    [switch]$Fresh,
+
+    [switch]$RetryActionable
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$CommandVersion = "0.2.0"
+$CommandVersion = "0.3.0"
 $ToolsRoot = $PSScriptRoot
 $IntegrationRoot = Split-Path -Parent $ToolsRoot
 $ConfigPath = Join-Path $IntegrationRoot "integration-config.json"
@@ -247,6 +249,27 @@ function Read-LatestCheckpointRecords {
     return @($latest.Values)
 }
 
+function Get-RetryTargetKeys {
+    param([Parameter(Mandatory = $true)][string]$SourceRunRoot)
+
+    $sourceCheckpoint = Join-Path $SourceRunRoot "checkpoint.jsonl"
+    if (-not (Test-Path -LiteralPath $sourceCheckpoint -PathType Leaf)) {
+        throw "Retry source checkpoint missing: $sourceCheckpoint"
+    }
+
+    $targets = @{}
+    foreach ($record in @(Read-LatestCheckpointRecords -Path $sourceCheckpoint)) {
+        $key = [string](Get-Prop $record "key" "")
+        $status = [string](Get-Prop $record "status" "")
+        $outcome = [string](Get-Prop $record "effectiveOutcome" "")
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        if ($status -eq "SUBMITTED" -and $outcome -in @("NORMALIZE","REACQUIRE","REVIEW")) {
+            $targets[$key] = $true
+        }
+    }
+    return $targets
+}
+
 function Get-RunSignature {
     $moviePart = (@($MovieId | Sort-Object) -join ',')
     $seriesPart = (@($SeriesId | Sort-Object) -join ',')
@@ -254,7 +277,18 @@ function Get-RunSignature {
 }
 
 function Save-RunMetadata {
-    param([string]$Path,[string]$Status,[string]$RunRoot,[string]$Signature,[int]$Processed,[int]$Submitted,[int]$Skipped,[int]$Errors)
+    param(
+        [string]$Path,
+        [string]$Status,
+        [string]$RunRoot,
+        [string]$Signature,
+        [int]$Processed,
+        [int]$Submitted,
+        [int]$Skipped,
+        [int]$Errors,
+        [bool]$IsRetryActionable = $false,
+        [string]$RetrySourceRunRoot = ""
+    )
     [pscustomobject][ordered]@{
         schemaVersion = "1.0"
         commandVersion = $CommandVersion
@@ -262,6 +296,8 @@ function Save-RunMetadata {
         library = $Library
         signature = $Signature
         runRoot = $RunRoot
+        retryActionable = $IsRetryActionable
+        retrySourceRunRoot = if ([string]::IsNullOrWhiteSpace($RetrySourceRunRoot)) { $null } else { $RetrySourceRunRoot }
         processed = $Processed
         submitted = $Submitted
         skipped = $Skipped
@@ -419,14 +455,63 @@ if (-not (Test-Path -LiteralPath $BridgePath -PathType Leaf)) { throw "Bridge mi
 Ensure-Directory $AuditRoot
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-$signature = Get-RunSignature
+if ($RetryActionable -and $Fresh) { throw "-RetryActionable and -Fresh cannot be used together." }
+if ($RetryActionable -and $MaxItems -gt 0) { throw "-RetryActionable must process its complete actionable set; do not combine it with -MaxItems." }
+
+$baseSignature = Get-RunSignature
+$signature = $baseSignature
 $scopeName = $Library.ToLowerInvariant()
 $scopeRoot = Join-Path $AuditRoot $scopeName
 Ensure-Directory $scopeRoot
 $latestPath = Join-Path $scopeRoot "latest.json"
 $runRoot = $null
+$retrySourceRunRoot = $null
+$retryTargetKeys = @{}
 
-if (-not $Fresh -and (Test-Path -LiteralPath $latestPath -PathType Leaf)) {
+if ($RetryActionable) {
+    if (-not (Test-Path -LiteralPath $latestPath -PathType Leaf)) {
+        throw "No prior $Library library-remediation run exists to retry."
+    }
+
+    try {
+        $latest = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $candidate = [string](Get-Prop $latest "runRoot" "")
+        $candidateRun = Join-Path $candidate "run.json"
+        if ([string]::IsNullOrWhiteSpace($candidate) -or -not (Test-Path -LiteralPath $candidateRun -PathType Leaf)) {
+            throw "Latest remediation run metadata is unavailable."
+        }
+
+        $meta = Get-Content -LiteralPath $candidateRun -Raw -Encoding UTF8 | ConvertFrom-Json
+        $metaStatus = [string](Get-Prop $meta "status" "")
+        $metaRetry = [bool](Get-Prop $meta "retryActionable" $false)
+
+        if ($metaStatus -eq "RUNNING" -and $metaRetry) {
+            $runRoot = $candidate
+            $retrySourceRunRoot = [string](Get-Prop $meta "retrySourceRunRoot" "")
+        }
+        elseif ($metaStatus -eq "COMPLETED") {
+            $retrySourceRunRoot = $candidate
+        }
+        else {
+            throw "Latest remediation run is not a completed source run or resumable actionable retry."
+        }
+    }
+    catch {
+        throw "Unable to resolve actionable retry source: $($_.Exception.Message)"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($retrySourceRunRoot)) {
+        throw "Actionable retry source run could not be resolved."
+    }
+
+    $retryTargetKeys = Get-RetryTargetKeys -SourceRunRoot $retrySourceRunRoot
+    if ($retryTargetKeys.Count -eq 0) {
+        throw "The source run contains no NORMALIZE, REACQUIRE, or REVIEW items to retry."
+    }
+
+    $signature = "$baseSignature;RetryActionable=true;RetrySource=$retrySourceRunRoot"
+}
+elseif (-not $Fresh -and (Test-Path -LiteralPath $latestPath -PathType Leaf)) {
     try {
         $latest = Get-Content -LiteralPath $latestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $candidate = [string](Get-Prop $latest "runRoot" "")
@@ -460,7 +545,7 @@ $skipped = 0
 $errors = 0
 $workerKicks = 0
 $lastWorkerStart = $null
-Save-RunMetadata -Path $runPath -Status "RUNNING" -RunRoot $runRoot -Signature $signature -Processed 0 -Submitted 0 -Skipped 0 -Errors 0
+Save-RunMetadata -Path $runPath -Status "RUNNING" -RunRoot $runRoot -Signature $signature -Processed 0 -Submitted 0 -Skipped 0 -Errors 0 -IsRetryActionable ([bool]$RetryActionable) -RetrySourceRunRoot $retrySourceRunRoot
 
 function Record-Result {
     param([string]$Key,[string]$Source,[string]$Title,[string]$Path,[string]$Status,[string]$Reason,$BridgeResult=$null)
@@ -511,6 +596,7 @@ try {
             }
             $fileId = if ($null -ne $file) { [int](Get-Prop $file "id" 0) } else { 0 }
             $key = "Radarr:movieFile:$fileId"
+            if ($RetryActionable -and -not $retryTargetKeys.ContainsKey($key)) { continue }
             if ($fileId -gt 0 -and $completedKeys.ContainsKey($key)) { continue }
             $processed++
             $title = [string](Get-Prop $movie "title" "")
@@ -596,6 +682,7 @@ try {
                 $fileId = [int](Get-Prop $file "id" 0)
                 if ($fileId -le 0) { continue }
                 $key = "Sonarr:episodeFile:$fileId"
+                if ($RetryActionable -and -not $retryTargetKeys.ContainsKey($key)) { continue }
                 if ($completedKeys.ContainsKey($key)) { continue }
                 $processed++
 
@@ -660,7 +747,7 @@ try {
             ForEach-Object { [pscustomobject]@{ outcome=$_.Name; count=$_.Count } }
     )
 
-    Save-RunMetadata -Path $runPath -Status "COMPLETED" -RunRoot $runRoot -Signature $signature -Processed $allRecords.Count -Submitted $totalSubmitted -Skipped $totalSkipped -Errors $totalErrors
+    Save-RunMetadata -Path $runPath -Status "COMPLETED" -RunRoot $runRoot -Signature $signature -Processed $allRecords.Count -Submitted $totalSubmitted -Skipped $totalSkipped -Errors $totalErrors -IsRetryActionable ([bool]$RetryActionable) -RetrySourceRunRoot $retrySourceRunRoot
 
     $summary = [pscustomobject][ordered]@{
         schemaVersion = "1.0"
@@ -669,6 +756,9 @@ try {
         library = $Library
         runRoot = $runRoot
         checkpointPath = $checkpointPath
+        retryActionable = [bool]$RetryActionable
+        retrySourceRunRoot = if ([string]::IsNullOrWhiteSpace($retrySourceRunRoot)) { $null } else { $retrySourceRunRoot }
+        retryTargetCount = if ($RetryActionable) { $retryTargetKeys.Count } else { 0 }
         processedThisInvocation = $processed
         submittedThisInvocation = $submitted
         skippedThisInvocation = $skipped
@@ -694,6 +784,10 @@ try {
     Write-Host ("Skipped   : {0}" -f $skipped)
     Write-Host ("Errors    : {0}" -f $errors)
     Write-Host ("Run root  : {0}" -f $runRoot)
+    if ($RetryActionable) {
+        Write-Host ("Retry from: {0}" -f $retrySourceRunRoot)
+        Write-Host ("Retry set : {0} actionable item(s)" -f $retryTargetKeys.Count)
+    }
     if ($outcomeCounts.Count -gt 0) {
         Write-Host "Outcomes  :"
         $outcomeCounts | Format-Table outcome,count -AutoSize
@@ -705,6 +799,6 @@ try {
     $summary | ConvertTo-Json -Depth 20
 }
 catch {
-    Save-RunMetadata -Path $runPath -Status "RUNNING" -RunRoot $runRoot -Signature $signature -Processed $processed -Submitted $submitted -Skipped $skipped -Errors ($errors + 1)
+    Save-RunMetadata -Path $runPath -Status "RUNNING" -RunRoot $runRoot -Signature $signature -Processed $processed -Submitted $submitted -Skipped $skipped -Errors ($errors + 1) -IsRetryActionable ([bool]$RetryActionable) -RetrySourceRunRoot $retrySourceRunRoot
     throw
 }

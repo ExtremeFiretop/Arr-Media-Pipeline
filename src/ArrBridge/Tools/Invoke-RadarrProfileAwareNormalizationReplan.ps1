@@ -1,12 +1,17 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
-    [string]$IntegrationRoot = $PSScriptRoot,
+    [string]$IntegrationRoot = '',
     [string]$PlanningCsv = '',
     [string]$PlanningSummary = ''
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$ToolsRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($IntegrationRoot)) {
+    $IntegrationRoot = Split-Path -Parent $ToolsRoot
+}
 
 function Get-Prop {
     param($Object, [string]$Name, $Default = $null)

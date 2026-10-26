@@ -11,6 +11,8 @@ $checks=@(
     @{Name="Reacquisition worker normalizes replacement"; Path="ReacquisitionWorker.ps1"; Marker="Invoke-ActiveChainNormalization"},
     @{Name="Reacquisition worker post-normalization completion"; Path="ReacquisitionWorker.ps1"; Marker="success-after-normalization-execute"},
     @{Name="Unified existing-library remediation entry exists"; Path="Tools\Invoke-LibraryRemediation.ps1"; Marker="LibraryRemediation"},
+    @{Name="Unified library actionable retry exists"; Path="Tools\Invoke-LibraryRemediation.ps1"; Marker="RetryActionable"},
+    @{Name="Bridge filters non-actionable reacquisition events"; Path="ReqestraArrBridge.ps1"; Marker="no_reacquisition_outcome_or_active_chain"},
     @{Name="Queue draining enabled"; Path="ReacquisitionWorker.ps1"; Marker='while ($MaxJobs -eq 0 -or $processed -lt $MaxJobs)'},
     @{Name="Normalization queue draining enabled"; Path="NormalizationWorker.ps1"; Marker='while ($MaxJobs -eq 0 -or $processed -lt $MaxJobs)'},
     @{Name="mkvpropedit fast path retained"; Path="Invoke-Normalization.ps1"; Marker="mkvpropedit"}

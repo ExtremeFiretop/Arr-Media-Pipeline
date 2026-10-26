@@ -20,7 +20,7 @@ if (-not (Test-Path -LiteralPath $ValidatorPath -PathType Leaf)) {
 $text = Get-Content -LiteralPath $ValidatorPath -Raw
 Add-Test 'ffprobe stdout is explicitly decoded as UTF-8' ($text -match '\$startInfo\.StandardOutputEncoding\s*=\s*\[System\.Text\.Encoding\]::UTF8')
 Add-Test 'ffprobe stderr is explicitly decoded as UTF-8' ($text -match '\$startInfo\.StandardErrorEncoding\s*=\s*\[System\.Text\.Encoding\]::UTF8')
-Add-Test 'Validator version is 0.2.8' ($text -match '(?m)^\$ValidatorVersion\s*=\s*"0\.2\.8"\s*$')
+Add-Test 'Validator version is 0.2.9' ($text -match '(?m)^\$ValidatorVersion\s*=\s*"0\.2\.9"\s*$')
 
 $executorPath = Join-Path (Split-Path $ValidatorPath -Parent) 'Integration\Invoke-Normalization.ps1'
 if (Test-Path -LiteralPath $executorPath -PathType Leaf) {
