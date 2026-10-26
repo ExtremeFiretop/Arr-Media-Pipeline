@@ -1,17 +1,27 @@
-# Integration runtime
+# Operator and diagnostic tools
 
-This directory is the production runtime surface for Arr Media Pipeline v0.9.29.10.
+These scripts are intentionally separated from production import/runtime logic.
 
-## Production flow
+## Whole-library remediation
 
-- `ReqestraArrBridge.ps1` — Radarr/Sonarr import entrypoint and remediation disposition coordinator.
-- `NormalizationPlanner.ps1` + `Invoke-Normalization.ps1` + `NormalizationWorker.ps1` — safe local metadata/header remediation.
-- `ReacquisitionPlanner.ps1` + `Invoke-Reacquisition.ps1` + `ReacquisitionWorker.ps1` — exact bad-release failure/blocklist, quarantine, replacement search, retry chain, and terminal DV routing.
-- `Invoke-RadarrRemediationSweep.ps1` — existing-library safety-net sweep through the same coordinator.
-- `Complete-*`, `Initialize-*`, `Invoke-*Retry`, `Invoke-*Quarantine`, and `*Common.ps1` — transaction/chain support modules.
+`Invoke-LibraryRemediation.ps1` is the supported one-time operator entry point for existing media:
 
-## Non-runtime material
+```powershell
+.\Integration\Tools\Invoke-LibraryRemediation.ps1 -Library Movies
+.\Integration\Tools\Invoke-LibraryRemediation.ps1 -Library TV
+.\Integration\Tools\Invoke-LibraryRemediation.ps1 -Library Both
+```
 
-Admin and audit commands live in `Tools`. Tests live outside Integration under `Development/Tests` in the release package and are optional at install time.
+It reconstructs Radarr/Sonarr context and feeds every existing Arr-owned file through `ReqestraArrBridge.ps1`, so the same production normalization/reacquisition logic is used. Progress is checkpointed under `Integration\Audit\library-remediation`; rerunning the same command resumes an incomplete run. Use `-Fresh` only when you intentionally want a new scan.
 
-No `Apply-*` hotfix scripts or `Payload` directory are required by this release.
+`-MovieId`, `-SeriesId`, and `-MaxItems` are diagnostic/development filters, not part of the normal operator workflow.
+
+## Other tools
+
+- `Invoke-CanonicalLibraryAudit.ps1` — read-only canonical audit.
+- `Invoke-NormalizationPlanningAudit.ps1` / `Invoke-NormalizationPlannedBatch.ps1` — normalization diagnostics and controlled batch testing.
+- `Get-*QueueStatus.ps1` — queue diagnostics.
+- `Get-*WorkerMode.ps1` / `Set-*WorkerMode.ps1` — explicit worker-mode administration.
+- `Get-ReacquisitionReleaseSelection.ps1` — reacquisition release-selection diagnostics.
+
+These tools are for inspection, testing, recovery, or explicit administration; normal new imports should require no manual action.

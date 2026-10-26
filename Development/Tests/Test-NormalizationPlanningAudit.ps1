@@ -1,11 +1,11 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $IntegrationRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$TargetPath = Join-Path $IntegrationRoot "Invoke-NormalizationPlanningAudit.ps1"
+$TargetPath = Join-Path $IntegrationRoot "Tools\Invoke-NormalizationPlanningAudit.ps1"
 
 Write-Host "Reqestra Normalization Planning Audit Contract Test"
 Write-Host "===================================================="

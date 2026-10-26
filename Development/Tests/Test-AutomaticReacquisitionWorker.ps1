@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version Latest
@@ -8,7 +8,7 @@ $IntegrationRoot = $PSScriptRoot
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionQueueCommon.ps1"
 $WorkerPath = Join-Path $IntegrationRoot "ReacquisitionWorker.ps1"
 $BridgePath = Join-Path $IntegrationRoot "ReqestraArrBridge.ps1"
-$GetModePath = Join-Path $IntegrationRoot "Get-ReacquisitionWorkerMode.ps1"
+$GetModePath = Join-Path $IntegrationRoot "Tools\Get-ReacquisitionWorkerMode.ps1"
 
 . $CommonPath
 

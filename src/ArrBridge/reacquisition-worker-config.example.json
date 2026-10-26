@@ -1,0 +1,9 @@
+{
+  "mode": "AUTO_DRY_RUN",
+  "allowAutomaticWrites": false,
+  "safetyAcknowledgement": "",
+  "allowTerminalDvRemediation": false,
+  "terminalDvAcknowledgement": "",
+  "allowFelResidualDiscard": false,
+  "felResidualDiscardAcknowledgement": ""
+}

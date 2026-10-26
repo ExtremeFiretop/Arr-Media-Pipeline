@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$IntegrationRoot = $PSScriptRoot
 )
@@ -6,7 +6,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$Runner = Join-Path $IntegrationRoot "Invoke-NormalizationPlannedBatch.ps1"
+$Runner = Join-Path $IntegrationRoot "Tools\Invoke-NormalizationPlannedBatch.ps1"
 $Planner = Join-Path $IntegrationRoot "NormalizationPlanner.ps1"
 
 foreach ($Required in @($Runner, $Planner)) {

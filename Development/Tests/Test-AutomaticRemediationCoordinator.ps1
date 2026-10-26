@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param([string]$ReleaseRoot=(Split-Path -Parent (Split-Path -Parent $PSScriptRoot)))
 Set-StrictMode -Version Latest
 $ErrorActionPreference="Stop"
@@ -10,7 +10,7 @@ $checks=@(
     @{Name="Reacquisition executor accepts bound automatic escalation"; Path="Invoke-Reacquisition.ps1"; Marker="automatic_escalation_source_outcome_changed"},
     @{Name="Reacquisition worker normalizes replacement"; Path="ReacquisitionWorker.ps1"; Marker="Invoke-ActiveChainNormalization"},
     @{Name="Reacquisition worker post-normalization completion"; Path="ReacquisitionWorker.ps1"; Marker="success-after-normalization-execute"},
-    @{Name="Existing-library sweep exists"; Path="Invoke-RadarrRemediationSweep.ps1"; Marker="RemediationSweep"},
+    @{Name="Unified existing-library remediation entry exists"; Path="Tools\Invoke-LibraryRemediation.ps1"; Marker="LibraryRemediation"},
     @{Name="Queue draining enabled"; Path="ReacquisitionWorker.ps1"; Marker='while ($MaxJobs -eq 0 -or $processed -lt $MaxJobs)'},
     @{Name="Normalization queue draining enabled"; Path="NormalizationWorker.ps1"; Marker='while ($MaxJobs -eq 0 -or $processed -lt $MaxJobs)'},
     @{Name="mkvpropedit fast path retained"; Path="Invoke-Normalization.ps1"; Marker="mkvpropedit"}

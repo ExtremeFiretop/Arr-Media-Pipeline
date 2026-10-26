@@ -4,7 +4,12 @@ param(
     [ValidateSet("Radarr", "Sonarr")]
     [string]$Source,
 
-    [switch]$DeferWorkerStart
+    [switch]$DeferWorkerStart,
+
+    [Parameter(Mandatory = $false)]
+    $ProfileOverride = $null,
+
+    [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
@@ -469,7 +474,7 @@ function Build-NormalizedContext {
 
     if ($Source -eq "Radarr") {
         $entityId = Get-EnvironmentValue "radarr_movie_id"
-        $profile = Get-ProfileEnrichment -EntityId $entityId
+        $profile = if ($null -ne $ProfileOverride) { $ProfileOverride } else { Get-ProfileEnrichment -EntityId $entityId }
 
         return [pscustomobject][ordered]@{
             schemaVersion = "1.0"
@@ -527,7 +532,7 @@ function Build-NormalizedContext {
     }
 
     $entityId = Get-EnvironmentValue "sonarr_series_id"
-    $profile = Get-ProfileEnrichment -EntityId $entityId
+    $profile = if ($null -ne $ProfileOverride) { $ProfileOverride } else { Get-ProfileEnrichment -EntityId $entityId }
 
     return [pscustomobject][ordered]@{
         schemaVersion = "1.0"
@@ -901,7 +906,8 @@ try {
         $record.completedUtc = [DateTime]::UtcNow.ToString("o")
         Write-JsonLine -Object ([pscustomobject]$record) -Path $MainLogPath
         ([pscustomobject]$record) | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $eventDirectory "bridge-result.json") -Encoding UTF8
-        exit 0
+        if ($PassThru) { [pscustomobject]$record }
+        return
     }
 
     if (-not (Test-Path -LiteralPath $mediaPath -PathType Leaf)) {
@@ -909,7 +915,8 @@ try {
         $record.completedUtc = [DateTime]::UtcNow.ToString("o")
         Write-JsonLine -Object ([pscustomobject]$record) -Path $MainLogPath
         ([pscustomobject]$record) | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $eventDirectory "bridge-result.json") -Encoding UTF8
-        exit 0
+        if ($PassThru) { [pscustomobject]$record }
+        return
     }
 
     if (-not (Test-Path -LiteralPath $ValidatorPath -PathType Leaf)) {
@@ -1332,7 +1339,8 @@ try {
     }
 
     # Observational bridge behavior remains non-blocking: queue/worker failures never fail the Arr import.
-    exit 0
+    if ($PassThru) { [pscustomobject]$record }
+    return
 }
 catch {
     $message = "{0} [{1}] {2}: {3}" -f ([DateTime]::UtcNow.ToString("o")), $Source, $eventId, $_.Exception.Message
@@ -1360,5 +1368,6 @@ catch {
         # Last-resort: do not let logging failure break the media import.
     }
 
-    exit 0
+    if ($PassThru) { [pscustomobject]$failure }
+    return
 }
