@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$PlannerVersion = "0.2.0"
+$PlannerVersion = "0.2.3"
 
 function Get-PropertyValue {
     param(
@@ -140,7 +140,9 @@ function Get-StreamFingerprint {
                     codec = [string](SafeValue $_ "codec" "")
                     language = Normalize-Language ([string](SafeValue $_ "language" ""))
                     title = [string](SafeValue $_ "title" "")
+                    default = [bool](SafeValue $_ "default" $false)
                     forced = [bool](SafeValue $_ "forced" $false)
+                    hearingImpaired = [bool](SafeValue $_ "hearingImpaired" $false)
                 }
             }
         )
@@ -297,6 +299,11 @@ try {
             channels = Get-PropertyValue -Object $track -Name "channels"
             default = [bool](Get-PropertyValue -Object $track -Name "default" -Default $false)
             commentary = [bool](Get-PropertyValue -Object $track -Name "commentary" -Default $false)
+            legacyCompatibility = [string]::Equals(
+                ([string](Get-PropertyValue -Object $track -Name "title" -Default "")).Trim(),
+                "Transcoded Compatibility Track",
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
         }
     }
 
@@ -321,13 +328,27 @@ try {
     $candidateTracks = @()
 
     if (-not [string]::IsNullOrWhiteSpace($preferredLanguage)) {
-        $candidateTracks = @($mainAudio | Where-Object { $_.language -eq $preferredLanguage })
+        $allPreferredTracks = @($mainAudio | Where-Object { $_.language -eq $preferredLanguage })
+        $nonLegacyPreferredTracks = @(
+            $allPreferredTracks | Where-Object {
+                ([string]$_.title) -notmatch '(?i)^\s*Transcoded Compatibility Track\s*$'
+            }
+        )
+        if ($nonLegacyPreferredTracks.Count -gt 0) { $candidateTracks = @($nonLegacyPreferredTracks) }
+        else { $candidateTracks = @($allPreferredTracks) }
 
         if ($candidateTracks.Count -eq 1) {
             $target = $candidateTracks[0]
         }
         elseif ($candidateTracks.Count -gt 1) {
-            Write-Plan (New-PlanResult -Status "BLOCKED" -Reason "multiple_preferred_audio_candidates" -MediaPath $mediaPath -PreferredLanguage $preferredLanguage -Actions @() -CandidateTracks @($candidateTracks) -CommandPreview "")
+            $preferredDefaults = @($candidateTracks | Where-Object { $_.default })
+            if ($preferredDefaults.Count -eq 1) {
+                $target = $preferredDefaults[0]
+                $candidateTracks = @($preferredDefaults)
+            }
+            else {
+                Write-Plan (New-PlanResult -Status "BLOCKED" -Reason "multiple_preferred_audio_candidates" -MediaPath $mediaPath -PreferredLanguage $preferredLanguage -Actions @() -CandidateTracks @($candidateTracks) -CommandPreview "")
+            }
         }
         else {
             Write-Plan (New-PlanResult -Status "BLOCKED" -Reason "preferred_audio_candidate_missing" -MediaPath $mediaPath -PreferredLanguage $preferredLanguage -Actions @() -CandidateTracks @($mainAudio) -CommandPreview "")
@@ -341,10 +362,28 @@ try {
             $candidateTracks = @($mainAudio)
         }
         elseif ($nonCommentaryDefaults.Count -eq 1) {
-            # Safe for cases such as commentary-default or multiple-default
-            # cleanup where one existing default is clearly the main track.
+            # Safe for cases such as commentary-default cleanup where one
+            # existing non-commentary default is clearly the main track.
             $target = $nonCommentaryDefaults[0]
             $candidateTracks = @($nonCommentaryDefaults)
+        }
+        elseif ($nonCommentaryDefaults.Count -gt 1) {
+            # Legacy compatibility processors created an AC-3 track named
+            # exactly "Transcoded Compatibility Track" and could leave both
+            # that fallback and the original program track marked default.
+            # Do not choose a track by codec/quality. Only resolve the ambiguity
+            # when exactly one *already-default* non-legacy program track exists
+            # and every other non-commentary default is the known legacy track.
+            $nonLegacyDefaults = @($nonCommentaryDefaults | Where-Object { -not $_.legacyCompatibility })
+            $legacyDefaults = @($nonCommentaryDefaults | Where-Object { $_.legacyCompatibility })
+
+            if ($nonLegacyDefaults.Count -eq 1 -and $legacyDefaults.Count -ge 1) {
+                $target = $nonLegacyDefaults[0]
+                $candidateTracks = @($nonCommentaryDefaults)
+            }
+            else {
+                Write-Plan (New-PlanResult -Status "BLOCKED" -Reason "ambiguous_default_audio_target" -MediaPath $mediaPath -PreferredLanguage "" -Actions @() -CandidateTracks @($mainAudio) -CommandPreview "")
+            }
         }
         else {
             Write-Plan (New-PlanResult -Status "BLOCKED" -Reason "ambiguous_default_audio_target" -MediaPath $mediaPath -PreferredLanguage "" -Actions @() -CandidateTracks @($mainAudio) -CommandPreview "")

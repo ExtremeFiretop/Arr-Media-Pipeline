@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)]
     [ValidateScript({ Test-Path -LiteralPath $_ })]
@@ -37,7 +37,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ValidatorVersion = "0.2.6"
+$ValidatorVersion = "0.2.8"
 $SchemaVersion = "1.1"
 
 trap {
@@ -314,6 +314,9 @@ function Invoke-FfprobeWithTimeout {
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    # ffprobe emits JSON metadata as UTF-8; decode redirected output explicitly.
+    $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     $startInfo.CreateNoWindow = $true
 
     $process = New-Object System.Diagnostics.Process
@@ -867,10 +870,24 @@ function Invoke-MediaValidation {
 
         $textSubs = @($subtitleSummaries | Where-Object { $_.codec -in $textSubtitleCodecs })
         $imageSubs = @($subtitleSummaries | Where-Object { $_.codec -in $imageSubtitleCodecs })
+        $unclassifiedSubs = @(
+            $subtitleSummaries | Where-Object {
+                -not [string]::IsNullOrWhiteSpace([string]$_.codec) -and
+                $_.codec -notin $textSubtitleCodecs -and
+                $_.codec -notin $imageSubtitleCodecs
+            }
+        )
 
         if ($imageSubs.Count -gt 0 -and $textSubs.Count -eq 0) {
             $findings += New-Finding -Severity "INFO" -Code "subtitle.image_only" -Message "Only image-based subtitles were detected; a text subtitle may improve client compatibility." -Details @{
                 imageSubtitleCount = $imageSubs.Count
+            }
+        }
+
+        if ($unclassifiedSubs.Count -gt 0) {
+            $findings += New-Finding -Severity "INFO" -Code "subtitle.codec_unclassified" -Message "One or more subtitle codecs are not classified by the current subtitle policy." -Details @{
+                streamIndexes = @($unclassifiedSubs | ForEach-Object { $_.index })
+                codecs = @($unclassifiedSubs | ForEach-Object { $_.codec } | Sort-Object -Unique)
             }
         }
     }

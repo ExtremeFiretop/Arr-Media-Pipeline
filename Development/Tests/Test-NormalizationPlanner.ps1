@@ -15,7 +15,8 @@ function New-Audio {
         [int]$Index,
         [string]$Language,
         [bool]$Default,
-        [bool]$Commentary = $false
+        [bool]$Commentary = $false,
+        [string]$Title = ""
     )
 
     [pscustomobject][ordered]@{
@@ -23,6 +24,7 @@ function New-Audio {
         codec = "aac"
         language = $Language
         channels = 2
+        title = $Title
         default = $Default
         commentary = $Commentary
     }
@@ -84,6 +86,53 @@ $cases = @(
         ExpectedStatus = "PLANNED"
         ExpectedReason = ""
         ExpectedActions = 2
+        ExpectedTargetOrdinal = 1
+    },
+    [pscustomobject]@{
+        Name = "Legacy compatibility default is cleared when one normal default already exists"
+        Audio = @(
+            (New-Audio 1 "eng" $true $false "Transcoded Compatibility Track"),
+            (New-Audio 2 "eng" $true $false "Original Program Audio"),
+            (New-Audio 3 "eng" $true $true "Commentary")
+        )
+        GenericCodes = @("audio.commentary_default", "audio.multiple_defaults")
+        ContextStatus = "SKIPPED"
+        Preferred = ""
+        ContextCodes = @()
+        ExpectedStatus = "PLANNED"
+        ExpectedReason = ""
+        ExpectedActions = 2
+        ExpectedTargetOrdinal = 2
+    },
+    [pscustomobject]@{
+        Name = "Two normal defaults remain ambiguous even with a legacy compatibility default"
+        Audio = @(
+            (New-Audio 1 "eng" $true $false "Transcoded Compatibility Track"),
+            (New-Audio 2 "eng" $true $false "Original Program Audio A"),
+            (New-Audio 3 "eng" $true $false "Original Program Audio B")
+        )
+        GenericCodes = @("audio.multiple_defaults")
+        ContextStatus = "SKIPPED"
+        Preferred = ""
+        ContextCodes = @()
+        ExpectedStatus = "BLOCKED"
+        ExpectedReason = "ambiguous_default_audio_target"
+        ExpectedActions = 0
+        ExpectedTargetOrdinal = 0
+    },
+    [pscustomobject]@{
+        Name = "Legacy compatibility sole default is not replaced by guessing"
+        Audio = @(
+            (New-Audio 1 "eng" $true $false "Transcoded Compatibility Track"),
+            (New-Audio 2 "eng" $false $false "Original Program Audio")
+        )
+        GenericCodes = @("audio.multiple_defaults")
+        ContextStatus = "SKIPPED"
+        Preferred = ""
+        ContextCodes = @()
+        ExpectedStatus = "NOT_NEEDED"
+        ExpectedReason = "target_audio_already_exclusive_default"
+        ExpectedActions = 0
         ExpectedTargetOrdinal = 1
     },
     [pscustomobject]@{

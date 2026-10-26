@@ -13,7 +13,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.2.0"
+$ExecutorVersion = "0.2.3"
 $IntegrationRoot = $PSScriptRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorPath = Join-Path $ValidatorRoot "MediaValidator.ps1"
@@ -163,7 +163,9 @@ function Get-StreamFingerprint {
                     codec = [string](Get-PropertyValue -Object $_ -Name "codec" -Default "")
                     language = Normalize-Language ([string](Get-PropertyValue -Object $_ -Name "language" -Default ""))
                     title = [string](Get-PropertyValue -Object $_ -Name "title" -Default "")
+                    default = [bool](Get-PropertyValue -Object $_ -Name "default" -Default $false)
                     forced = [bool](Get-PropertyValue -Object $_ -Name "forced" -Default $false)
+                    hearingImpaired = [bool](Get-PropertyValue -Object $_ -Name "hearingImpaired" -Default $false)
                 }
             }
         )
@@ -241,6 +243,23 @@ function Resolve-Mkvmerge {
     }
 
     $command = Get-Command "mkvmerge.exe" -ErrorAction SilentlyContinue
+    if ($null -ne $command) {
+        return $command.Source
+    }
+
+    return ""
+}
+
+function Resolve-Mkvpropedit {
+    $customScriptsRoot = Split-Path -Parent $ValidatorRoot
+    $mkvToolNixRoot = Split-Path -Parent $customScriptsRoot
+    $candidate = Join-Path $mkvToolNixRoot "mkvpropedit.exe"
+
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        return $candidate
+    }
+
+    $command = Get-Command "mkvpropedit.exe" -ErrorAction SilentlyContinue
     if ($null -ne $command) {
         return $command.Source
     }
@@ -586,6 +605,7 @@ $result = [ordered]@{
     tempPath = $null
     backupPath = $null
     replacementMethod = "System.IO.File.Replace"
+    normalizationMethod = "mkvpropedit_staged_copy"
     backupDeleted = $false
     rollback = $null
     arrReconciliation = $null
@@ -733,6 +753,13 @@ try {
     if ([string]::IsNullOrWhiteSpace($mkvmergePath)) {
         $result.status = "BLOCKED"
         $result.reason = "mkvmerge_not_found"
+        throw [System.InvalidOperationException]::new("BLOCKED_RESULT")
+    }
+
+    $mkvpropeditPath = Resolve-Mkvpropedit
+    if ([string]::IsNullOrWhiteSpace($mkvpropeditPath)) {
+        $result.status = "BLOCKED"
+        $result.reason = "mkvpropedit_not_found"
         throw [System.InvalidOperationException]::new("BLOCKED_RESULT")
     }
 
@@ -920,7 +947,8 @@ try {
     }
 
     $freeBytes = Get-FreeBytesForPath -Path $mediaPath
-    $requiredFreeBytes = [int64]$item.Length + [int64][Math]::Max(1073741824, [double]$item.Length * 0.10)
+    $freeSpaceReserveBytes = [int64][Math]::Ceiling([Math]::Max([double]1073741824, ([double]$item.Length * 0.10)))
+    $requiredFreeBytes = [int64]$item.Length + $freeSpaceReserveBytes
 
     $result.preflight = [ordered]@{
         sourceSnapshotMatches = $true
@@ -929,6 +957,8 @@ try {
         plannedFindingCodes = @($plannedFindingCodes)
         currentFindingCodes = @($currentFindingCodes)
         mkvmergePath = $mkvmergePath
+        mkvpropeditPath = $mkvpropeditPath
+        normalizationMethod = "mkvpropedit_staged_copy"
         mkvmergeIdentifyExitCode = $identifyResult.exitCode
         freeBytes = $freeBytes
         requiredFreeBytes = $requiredFreeBytes
@@ -968,27 +998,37 @@ try {
 
     $directory = Split-Path -Parent $mediaPath
     $baseName = [System.IO.Path]::GetFileNameWithoutExtension($mediaPath)
-    $tempPath = Join-Path $directory ($baseName + ".reqestra-" + $executionId + ".tmp")
+    $tempPath = Join-Path $directory ($baseName + ".reqestra-" + $executionId + ".tmp.mkv")
     $backupPath = Join-Path $directory ($baseName + ".reqestra-backup-" + [DateTime]::UtcNow.ToString("yyyyMMddTHHmmssZ") + ".bak")
-    $failedNewPath = Join-Path $directory ($baseName + ".reqestra-failed-" + $executionId + ".tmp")
+    $failedNewPath = Join-Path $directory ($baseName + ".reqestra-failed-" + $executionId + ".tmp.mkv")
 
     $result.tempPath = $tempPath
     $result.backupPath = $backupPath
 
-    $mkvmergeArgs = @("-o", $tempPath, "--disable-track-statistics-tags")
+    # Header-only fast path: make a byte-for-byte staged copy, modify only the
+    # requested Matroska audio default flags on that copy, validate it, then
+    # atomically promote it with File.Replace.  This deliberately avoids a
+    # full mkvmerge remux, which can canonicalize unrelated track metadata.
+    [System.IO.File]::Copy($mediaPath, $tempPath, $false)
+
+    $propeditArgs = @($tempPath)
     foreach ($mapped in $mappedActions) {
         $flag = if ($mapped.to) { "1" } else { "0" }
-        $mkvmergeArgs += @("--default-track-flag", ("{0}:{1}" -f $mapped.mkvmergeTrackId, $flag))
+        $selector = "track:a{0}" -f [int]$mapped.audioOrdinal
+        $propeditArgs += @("--edit", $selector, "--set", ("flag-default={0}" -f $flag))
     }
-    $mkvmergeArgs += $mediaPath
 
-    $muxStdout = Join-Path $workDirectory "mkvmerge-stdout.txt"
-    $muxStderr = Join-Path $workDirectory "mkvmerge-stderr.txt"
-    $muxResult = Invoke-CapturedProcess -FileName $mkvmergePath -Arguments $mkvmergeArgs -StdoutPath $muxStdout -StderrPath $muxStderr
+    $propeditStdout = Join-Path $workDirectory "mkvpropedit-stdout.txt"
+    $propeditStderr = Join-Path $workDirectory "mkvpropedit-stderr.txt"
+    $propeditResult = Invoke-CapturedProcess `
+        -FileName $mkvpropeditPath `
+        -Arguments $propeditArgs `
+        -StdoutPath $propeditStdout `
+        -StderrPath $propeditStderr
 
-    if ($muxResult.exitCode -gt 1 -or -not (Test-Path -LiteralPath $tempPath -PathType Leaf)) {
+    if ($propeditResult.exitCode -ne 0 -or -not (Test-Path -LiteralPath $tempPath -PathType Leaf)) {
         $result.status = "FAILED"
-        $result.reason = "mkvmerge_failed"
+        $result.reason = "mkvpropedit_failed"
         throw [System.InvalidOperationException]::new("EXECUTION_FAILED")
     }
 

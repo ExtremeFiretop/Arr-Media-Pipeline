@@ -2,20 +2,26 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("Radarr", "Sonarr")]
-    [string]$Source
+    [string]$Source,
+
+    [switch]$DeferWorkerStart
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$BridgeVersion = "0.8.0"
+$BridgeVersion = "0.9.26"
 $Prefix = $Source.ToLowerInvariant() + "_"
 $IntegrationRoot = $PSScriptRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorPath = Join-Path $ValidatorRoot "MediaValidator.ps1"
 $ContextValidatorPath = Join-Path $IntegrationRoot "ContextValidator.ps1"
 $NormalizationPlannerPath = Join-Path $IntegrationRoot "NormalizationPlanner.ps1"
+$ReacquisitionPlannerPath = Join-Path $IntegrationRoot "ReacquisitionPlanner.ps1"
 $QueueCommonPath = Join-Path $IntegrationRoot "QueueCommon.ps1"
+$ReacquisitionQueueCommonPath = Join-Path $IntegrationRoot "ReacquisitionQueueCommon.ps1"
+$ReacquisitionChainCommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
+$SonarrReacquisitionCommonPath = Join-Path $IntegrationRoot "SonarrReacquisitionCommon.ps1"
 $PolicyPath = Join-Path $ValidatorRoot "validator-policy.json"
 $ConfigPath = Join-Path $IntegrationRoot "integration-config.json"
 $LogRoot = Join-Path $IntegrationRoot "logs"
@@ -49,6 +55,47 @@ function Get-HigherOutcome {
     }
 
     return $First
+}
+
+function Test-AutomaticReacquisitionEscalationReason {
+    param([string]$Reason)
+    return $Reason -in @(
+        "multiple_preferred_audio_candidates",
+        "ambiguous_default_audio_target",
+        "preferred_audio_candidate_missing",
+        "container_not_supported"
+    )
+}
+
+function Test-ActiveReacquisitionChain {
+    param($Context)
+
+    $sourceName = [string](Get-PropertyValue -Object $Context -Name "source" -Default "")
+    $entity = Get-PropertyValue -Object $Context -Name "entity" -Default $null
+    $entityId = [int](Get-PropertyValue -Object $entity -Name "id" -Default 0)
+    if ($entityId -le 0) { return $false }
+
+    $chainPath = $null
+    if ($sourceName -eq "Radarr") {
+        $chainPath = Get-ReacquisitionChainPath -IntegrationRoot $IntegrationRoot -Source "Radarr" -EntityId $entityId
+    }
+    elseif ($sourceName -eq "Sonarr") {
+        $episode = Get-PropertyValue -Object $Context -Name "episode" -Default $null
+        [int[]]$episodeIds = @(
+            @(Get-PropertyValue -Object $episode -Name "ids" -Default @()) |
+                ForEach-Object { $parsed=0; if ([int]::TryParse([string]$_,[ref]$parsed) -and $parsed -gt 0) { $parsed } }
+        )
+        if ($episodeIds.Count -eq 0) { return $false }
+        $key = Get-SonarrEpisodeSetKey -EpisodeIds $episodeIds
+        $chainPath = Get-ReacquisitionChainPath -IntegrationRoot $IntegrationRoot -Source "Sonarr" -EntityId $entityId -Discriminator $key
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$chainPath) -or -not (Test-Path -LiteralPath $chainPath -PathType Leaf)) { return $false }
+    try {
+        $chain = Get-Content -LiteralPath $chainPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        return ([string](Get-PropertyValue -Object $chain -Name "status" -Default "") -eq "ACTIVE")
+    }
+    catch { return $false }
 }
 
 function Ensure-Directory {
@@ -679,6 +726,7 @@ function Invoke-NormalizationPlannerProcess {
         [Parameter(Mandatory = $true)][string]$ContextPath,
         [Parameter(Mandatory = $true)][string]$ValidatorResultPath,
         [string]$ContextualResultPath,
+        [string]$AutomaticEscalationReason = "",
         [Parameter(Mandatory = $true)][string]$JsonOutPath,
         [Parameter(Mandatory = $true)][string]$StdoutPath,
         [Parameter(Mandatory = $true)][string]$StderrPath
@@ -693,6 +741,68 @@ function Invoke-NormalizationPlannerProcess {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-File", $NormalizationPlannerPath,
+        "-ContextPath", $ContextPath,
+        "-ValidatorResultPath", $ValidatorResultPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ContextualResultPath)) {
+        $arguments += @("-ContextualResultPath", $ContextualResultPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($AutomaticEscalationReason)) {
+        $arguments += @("-AutomaticEscalationReason", $AutomaticEscalationReason)
+    }
+
+    $arguments += @("-JsonOut", $JsonOutPath)
+
+    $argumentString = (@($arguments | ForEach-Object { Quote-ProcessArgument ([string]$_) })) -join " "
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $powerShellExe
+    $startInfo.Arguments = $argumentString
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+
+    [void]$process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    $processExitCode = $process.ExitCode
+    $process.Dispose()
+
+    $stdout | Set-Content -LiteralPath $StdoutPath -Encoding UTF8
+    $stderr | Set-Content -LiteralPath $StderrPath -Encoding UTF8
+
+    return $processExitCode
+}
+
+
+function Invoke-ReacquisitionPlannerProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$ContextPath,
+        [Parameter(Mandatory = $true)][string]$ValidatorResultPath,
+        [string]$ContextualResultPath,
+        [Parameter(Mandatory = $true)][string]$JsonOutPath,
+        [Parameter(Mandatory = $true)][string]$StdoutPath,
+        [Parameter(Mandatory = $true)][string]$StderrPath
+    )
+
+    $powerShellExe = Join-Path $PSHOME "powershell.exe"
+    if (-not (Test-Path -LiteralPath $powerShellExe -PathType Leaf)) {
+        $powerShellExe = "powershell.exe"
+    }
+
+    $arguments = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $ReacquisitionPlannerPath,
         "-ContextPath", $ContextPath,
         "-ValidatorResultPath", $ValidatorResultPath
     )
@@ -732,6 +842,7 @@ function Invoke-NormalizationPlannerProcess {
     return $processExitCode
 }
 
+
 Ensure-Directory $LogRoot
 Ensure-Directory $EventRoot
 
@@ -759,7 +870,7 @@ try {
     }
 
     $record = [ordered]@{
-        schemaVersion = "1.5"
+        schemaVersion = "1.6"
         bridgeVersion = $BridgeVersion
         eventId = $eventId
         source = $Source
@@ -778,6 +889,9 @@ try {
         effectiveOutcome = $null
         normalizationPlan = $null
         normalizationQueue = $null
+        remediationDecision = $null
+        reacquisitionPlan = $null
+        reacquisitionQueue = $null
         environmentFile = $environmentPath
         eventDirectory = $eventDirectory
     }
@@ -818,7 +932,24 @@ try {
         throw "QueueCommon.ps1 was not found at expected path: $QueueCommonPath"
     }
 
+    if (-not (Test-Path -LiteralPath $ReacquisitionPlannerPath -PathType Leaf)) {
+        throw "ReacquisitionPlanner.ps1 was not found at expected path: $ReacquisitionPlannerPath"
+    }
+
+    if (-not (Test-Path -LiteralPath $ReacquisitionQueueCommonPath -PathType Leaf)) {
+        throw "ReacquisitionQueueCommon.ps1 was not found at expected path: $ReacquisitionQueueCommonPath"
+    }
+    if (-not (Test-Path -LiteralPath $ReacquisitionChainCommonPath -PathType Leaf)) {
+        throw "ReacquisitionChainCommon.ps1 was not found at expected path: $ReacquisitionChainCommonPath"
+    }
+    if (-not (Test-Path -LiteralPath $SonarrReacquisitionCommonPath -PathType Leaf)) {
+        throw "SonarrReacquisitionCommon.ps1 was not found at expected path: $SonarrReacquisitionCommonPath"
+    }
+
     . $QueueCommonPath
+    . $ReacquisitionQueueCommonPath
+    . $ReacquisitionChainCommonPath
+    . $SonarrReacquisitionCommonPath
 
     $context = Build-NormalizedContext -EventId $eventId -EventType $eventType -MediaPath $mediaPath
     $contextPath = Join-Path $eventDirectory "context.json"
@@ -967,55 +1098,89 @@ try {
             }
 
             if ([string]$planResult.status -eq "PLANNED") {
-                try {
-                    $queueResult = Enqueue-NormalizationPlan `
-                        -IntegrationRoot $IntegrationRoot `
-                        -PlanPath $planJsonPath `
-                        -Source $Source `
-                        -EventId $eventId
-
-                    $workerStart = $null
-                    if ([string]$queueResult.status -eq "ENQUEUED") {
-                        $workerStart = Start-NormalizationQueueWorker -IntegrationRoot $IntegrationRoot
-                    }
-
+                $activeReacquisitionChain = Test-ActiveReacquisitionChain -Context $context
+                if ($activeReacquisitionChain) {
+                    # During an active replacement chain, the reacquisition worker
+                    # owns normalization so it can atomically continue/retire the
+                    # rollback after the locally-fixed replacement reaches PASS.
                     $record.normalizationQueue = [ordered]@{
-                        status = [string]$queueResult.status
-                        reason = $queueResult.reason
-                        jobId = $queueResult.jobId
-                        jobFile = $queueResult.jobFile
-                        queueMode = $queueResult.queueMode
-                        requestedMode = if ($queueResult.PSObject.Properties["requestedMode"]) { $queueResult.requestedMode } else { $null }
-                        configStatus = if ($queueResult.PSObject.Properties["configStatus"]) { $queueResult.configStatus } else { $null }
-                        existingState = if ($queueResult.PSObject.Properties["existingState"]) { $queueResult.existingState } else { $null }
-                        workerStarted = if ($null -ne $workerStart) { [bool]$workerStart.started } else { $false }
-                        workerProcessId = if ($null -ne $workerStart) { $workerStart.processId } else { $null }
-                        workerStartReason = if ($null -ne $workerStart) { $workerStart.reason } else { $null }
-                    }
-                }
-                catch {
-                    # Queue automation is intentionally non-blocking. Validation
-                    # results remain authoritative and the Arr import must not fail
-                    # because queueing or worker startup encountered an error.
-                    $record.normalizationQueue = [ordered]@{
-                        status = "QUEUE_ERROR"
-                        reason = $_.Exception.Message
+                        status = "DEFERRED_TO_REACQUISITION_WORKER"
+                        reason = "active_reacquisition_chain_owns_normalization"
                         jobId = $null
                         jobFile = $null
-                        queueMode = "AUTO_DRY_RUN"
-                        requestedMode = $null
-                        configStatus = "QUEUE_ERROR_FAIL_CLOSED"
+                        queueMode = $null
                         workerStarted = $false
                     }
-
-                    Add-Content -LiteralPath $ErrorLogPath -Value (
-                        "{0} [{1}] {2}: normalization queue error: {3}" -f
-                        ([DateTime]::UtcNow.ToString("o")),
-                        $Source,
-                        $eventId,
-                        $_.Exception.Message
-                    ) -Encoding UTF8
                 }
+                else {
+                    try {
+                        $queueResult = Enqueue-NormalizationPlan `
+                            -IntegrationRoot $IntegrationRoot `
+                            -PlanPath $planJsonPath `
+                            -Source $Source `
+                            -EventId $eventId
+
+                        $workerStart = $null
+                        if ([string]$queueResult.status -eq "ENQUEUED" -and -not $DeferWorkerStart) {
+                            $workerStart = Start-NormalizationQueueWorker -IntegrationRoot $IntegrationRoot
+                        }
+
+                        $record.normalizationQueue = [ordered]@{
+                            status = [string]$queueResult.status
+                            reason = $queueResult.reason
+                            jobId = $queueResult.jobId
+                            jobFile = $queueResult.jobFile
+                            queueMode = $queueResult.queueMode
+                            requestedMode = if ($queueResult.PSObject.Properties["requestedMode"]) { $queueResult.requestedMode } else { $null }
+                            configStatus = if ($queueResult.PSObject.Properties["configStatus"]) { $queueResult.configStatus } else { $null }
+                            existingState = if ($queueResult.PSObject.Properties["existingState"]) { $queueResult.existingState } else { $null }
+                            workerStarted = if ($null -ne $workerStart) { [bool]$workerStart.started } else { $false }
+                            workerProcessId = if ($null -ne $workerStart) { $workerStart.processId } else { $null }
+                            workerStartReason = if ($DeferWorkerStart -and [string]$queueResult.status -eq "ENQUEUED") { "deferred_by_caller" } elseif ($null -ne $workerStart) { $workerStart.reason } else { $null }
+                        }
+                    }
+                    catch {
+                        $record.normalizationQueue = [ordered]@{
+                            status = "QUEUE_ERROR"
+                            reason = $_.Exception.Message
+                            jobId = $null
+                            jobFile = $null
+                            queueMode = "AUTO_DRY_RUN"
+                            requestedMode = $null
+                            configStatus = "QUEUE_ERROR_FAIL_CLOSED"
+                            workerStarted = $false
+                        }
+                        Add-Content -LiteralPath $ErrorLogPath -Value (
+                            "{0} [{1}] {2}: normalization queue error: {3}" -f
+                            ([DateTime]::UtcNow.ToString("o")), $Source, $eventId, $_.Exception.Message
+                        ) -Encoding UTF8
+                    }
+                }
+            }
+            elseif ([string]$record.effectiveOutcome -eq "NORMALIZE" -and
+                    [string]$planResult.status -in @("BLOCKED","SKIPPED") -and
+                    (Test-AutomaticReacquisitionEscalationReason -Reason ([string]$planResult.reason))) {
+                $record.remediationDecision = [ordered]@{
+                    type = "AUTOMATIC_NORMALIZE_TO_REACQUIRE"
+                    from = "NORMALIZE"
+                    to = "REACQUIRE"
+                    reason = [string]$planResult.reason
+                    plannerStatus = [string]$planResult.status
+                }
+                $record.effectiveOutcome = "REACQUIRE"
+            }
+            elseif ([string]$record.effectiveOutcome -eq "NORMALIZE" -and [string]$planResult.status -ne "PLANNED") {
+                # Unknown/inconsistent local-remediation failures are not silently
+                # deleted. Fail closed to REVIEW unless explicitly classified as
+                # a safe automatic reacquisition transition above.
+                $record.remediationDecision = [ordered]@{
+                    type = "NORMALIZATION_REVIEW_REQUIRED"
+                    from = "NORMALIZE"
+                    to = "REVIEW"
+                    reason = [string]$planResult.reason
+                    plannerStatus = [string]$planResult.status
+                }
+                $record.effectiveOutcome = "REVIEW"
             }
         }
         else {
@@ -1028,11 +1193,145 @@ try {
         }
     }
 
-    $record.completedUtc = [DateTime]::UtcNow.ToString("o")
-    Write-JsonLine -Object ([pscustomobject]$record) -Path $MainLogPath
-    ([pscustomobject]$record) | ConvertTo-Json -Depth 40 | Set-Content -LiteralPath (Join-Path $eventDirectory "bridge-result.json") -Encoding UTF8
+    if ($record.status -eq "VALIDATED" -and [string]$record.effectiveOutcome -eq "REACQUIRE") {
+        $reacquisitionPlanPath = Join-Path $eventDirectory "reacquisition-plan.json"
+        $reacquisitionStdoutPath = Join-Path $eventDirectory "reacquisition-planner-stdout.txt"
+        $reacquisitionStderrPath = Join-Path $eventDirectory "reacquisition-planner-stderr.txt"
 
-    # Observational only: validation or enrichment findings never fail the import.
+        $contextualPathForReacquisition = ""
+        if ($null -ne $record.contextual) {
+            $contextualResultFile = $null
+
+            if ($record.contextual -is [System.Collections.IDictionary]) {
+                if ($record.contextual.Contains("resultFile")) {
+                    $contextualResultFile = $record.contextual["resultFile"]
+                }
+            }
+            else {
+                $resultFileProperty = $record.contextual.PSObject.Properties["resultFile"]
+                if ($null -ne $resultFileProperty) {
+                    $contextualResultFile = $resultFileProperty.Value
+                }
+            }
+
+            if ($null -ne $contextualResultFile -and
+                -not [string]::IsNullOrWhiteSpace([string]$contextualResultFile)) {
+                $contextualPathForReacquisition = [string]$contextualResultFile
+            }
+        }
+
+        try {
+            $automaticEscalationReason = ""
+            if ($null -ne $record.remediationDecision -and
+                [string]$record.remediationDecision.type -eq "AUTOMATIC_NORMALIZE_TO_REACQUIRE") {
+                $automaticEscalationReason = [string]$record.remediationDecision.reason
+            }
+
+            $reacquisitionExitCode = Invoke-ReacquisitionPlannerProcess `
+                -ContextPath $contextPath `
+                -ValidatorResultPath $validatorJsonPath `
+                -ContextualResultPath $contextualPathForReacquisition `
+                -AutomaticEscalationReason $automaticEscalationReason `
+                -JsonOutPath $reacquisitionPlanPath `
+                -StdoutPath $reacquisitionStdoutPath `
+                -StderrPath $reacquisitionStderrPath
+
+            if (Test-Path -LiteralPath $reacquisitionPlanPath -PathType Leaf) {
+                $reacquisitionResult = Get-Content -LiteralPath $reacquisitionPlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
+
+                $record.reacquisitionPlan = [ordered]@{
+                    status = [string]$reacquisitionResult.status
+                    reason = $reacquisitionResult.reason
+                    plannerVersion = [string]$reacquisitionResult.plannerVersion
+                    findingCodes = @($reacquisitionResult.triggerFindingCodes)
+                    releaseIdentityStrength = $reacquisitionResult.releaseIdentity.strength
+                    loopKey = $reacquisitionResult.loopPrevention.loopKey
+                    executionEnabled = [bool]$reacquisitionResult.executionEnabled
+                    processExitCode = [int]$reacquisitionExitCode
+                    resultFile = $reacquisitionPlanPath
+                    stdoutFile = $reacquisitionStdoutPath
+                    stderrFile = $reacquisitionStderrPath
+                }
+            }
+            else {
+                $record.reacquisitionPlan = [ordered]@{
+                    status = "NO_RESULT"
+                    processExitCode = [int]$reacquisitionExitCode
+                    stdoutFile = $reacquisitionStdoutPath
+                    stderrFile = $reacquisitionStderrPath
+                }
+            }
+        }
+        catch {
+            $record.reacquisitionPlan = [ordered]@{
+                status = "PLANNER_ERROR"
+                reason = $_.Exception.Message
+                executionEnabled = $false
+            }
+
+            Add-Content -LiteralPath $ErrorLogPath -Value (
+                "{0} [{1}] {2}: reacquisition planner error: {3}" -f
+                ([DateTime]::UtcNow.ToString("o")),
+                $Source,
+                $eventId,
+                $_.Exception.Message
+            ) -Encoding UTF8
+        }
+    }
+
+    $record.completedUtc = [DateTime]::UtcNow.ToString("o")
+    $bridgeResultPath = Join-Path $eventDirectory "bridge-result.json"
+    $reacquisitionJobQueued = $false
+
+    if ($record.status -eq "VALIDATED") {
+        try {
+            $rq = Enqueue-ReacquisitionBridgeEvent `
+                -IntegrationRoot $IntegrationRoot `
+                -Source $Source `
+                -EventId $eventId `
+                -BridgeResultPath $bridgeResultPath `
+                -EffectiveOutcome ([string]$record.effectiveOutcome)
+
+            $record.reacquisitionQueue = [ordered]@{
+                status = [string]$rq.status
+                reason = $rq.reason
+                jobId = $rq.jobId
+                jobFile = $rq.jobFile
+                queueMode = $rq.queueMode
+                requestedMode = $rq.requestedMode
+                configStatus = $rq.configStatus
+                workerStartRequested = ([string]$rq.status -eq "ENQUEUED")
+            }
+            $reacquisitionJobQueued = ([string]$rq.status -eq "ENQUEUED")
+        }
+        catch {
+            $record.reacquisitionQueue = [ordered]@{
+                status = "QUEUE_ERROR"
+                reason = $_.Exception.Message
+                queueMode = "AUTO_DRY_RUN"
+                workerStartRequested = $false
+            }
+            Add-Content -LiteralPath $ErrorLogPath -Value (
+                "{0} [{1}] {2}: reacquisition queue error: {3}" -f
+                ([DateTime]::UtcNow.ToString("o")), $Source, $eventId, $_.Exception.Message
+            ) -Encoding UTF8
+        }
+    }
+
+    Write-JsonLine -Object ([pscustomobject]$record) -Path $MainLogPath
+    ([pscustomobject]$record) | ConvertTo-Json -Depth 50 | Set-Content -LiteralPath $bridgeResultPath -Encoding UTF8
+
+    if ($reacquisitionJobQueued -and -not $DeferWorkerStart) {
+        $workerStart = Start-ReacquisitionQueueWorker -IntegrationRoot $IntegrationRoot
+        if (-not [bool]$workerStart.started) {
+            Add-Content -LiteralPath $ErrorLogPath -Value (
+                "{0} [{1}] {2}: reacquisition worker start failed: {3}" -f
+                ([DateTime]::UtcNow.ToString("o")), $Source, $eventId, [string]$workerStart.reason
+            ) -Encoding UTF8
+        }
+    }
+
+    # Observational bridge behavior remains non-blocking: queue/worker failures never fail the Arr import.
     exit 0
 }
 catch {
@@ -1041,7 +1340,7 @@ catch {
 
     try {
         $failure = [pscustomobject][ordered]@{
-            schemaVersion = "1.5"
+            schemaVersion = "1.6"
             bridgeVersion = $BridgeVersion
             eventId = $eventId
             source = $Source

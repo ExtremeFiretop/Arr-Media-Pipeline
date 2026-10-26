@@ -1,19 +1,17 @@
-# Arr Media Pipeline Documentation
+# Integration runtime
 
-This directory documents the current behavior of the project. Historical implementation notes belong in the root [`CHANGELOG.md`](../CHANGELOG.md).
+This directory is the production runtime surface for Arr Media Pipeline v0.9.29.10.
 
-## Start here
+## Production flow
 
-- [Architecture](architecture.md) — components, boundaries, and end-to-end flow
-- [Installation](installation.md) — source layout, release layout, deployment, configuration
-- [Media Validator](media-validator.md) — generic classifier, outcomes, audit mode
-- [Arr Bridge](arr-bridge.md) — Radarr/Sonarr events, contextual validation, event artifacts
-- [Normalization](normalization.md) — planner, executor, atomic replacement, reconciliation
-- [Queue and Recovery](queue-and-recovery.md) — queue states, automatic modes, crash recovery
-- [Maintenance](maintenance.md) — backup retention and safe temp cleanup
+- `ReqestraArrBridge.ps1` — Radarr/Sonarr import entrypoint and remediation disposition coordinator.
+- `NormalizationPlanner.ps1` + `Invoke-Normalization.ps1` + `NormalizationWorker.ps1` — safe local metadata/header remediation.
+- `ReacquisitionPlanner.ps1` + `Invoke-Reacquisition.ps1` + `ReacquisitionWorker.ps1` — exact bad-release failure/blocklist, quarantine, replacement search, retry chain, and terminal DV routing.
+- `Invoke-RadarrRemediationSweep.ps1` — existing-library safety-net sweep through the same coordinator.
+- `Complete-*`, `Initialize-*`, `Invoke-*Retry`, `Invoke-*Quarantine`, and `*Common.ps1` — transaction/chain support modules.
 
-## Documentation principle
+## Non-runtime material
 
-The documentation describes the **current system**, not the chronological history of how it was built.
+Admin and audit commands live in `Tools`. Tests live outside Integration under `Development/Tests` in the release package and are optional at install time.
 
-Use [`CHANGELOG.md`](../CHANGELOG.md) for version history and migration notes.
+No `Apply-*` hotfix scripts or `Payload` directory are required by this release.

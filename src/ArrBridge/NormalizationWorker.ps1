@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateRange(1, 1000)]
-    [int]$MaxJobs = 100
+    [ValidateRange(0, 10000)]
+    [int]$MaxJobs = 0
 )
 
 Set-StrictMode -Version Latest
@@ -275,7 +275,7 @@ try {
 
     $processed = 0
 
-    while ($processed -lt $MaxJobs) {
+    while ($MaxJobs -eq 0 -or $processed -lt $MaxJobs) {
         $next = Get-ChildItem -LiteralPath $paths.pending -Filter "*.json" -File -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTimeUtc, Name |
             Select-Object -First 1
