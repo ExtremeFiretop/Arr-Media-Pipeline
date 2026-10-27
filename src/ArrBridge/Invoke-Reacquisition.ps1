@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.2.7"
+$ExecutorVersion = "0.2.8"
 $IntegrationRoot = $PSScriptRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorPath = Join-Path $ValidatorRoot "MediaValidator.ps1"
@@ -157,6 +157,18 @@ function Test-PathEquivalent {
     catch {
         return [string]::Equals($First, $Second, [System.StringComparison]::OrdinalIgnoreCase)
     }
+}
+
+function Normalize-ReacquisitionIdentityTitle {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return "" }
+
+    $normalized = $Value.Trim().ToLowerInvariant()
+    $normalized = [regex]::Replace($normalized, '[\s\.\-_]+', ' ')
+    $normalized = [regex]::Replace($normalized, '[^a-z0-9+ ]', '')
+    $normalized = [regex]::Replace($normalized, '\s+', ' ')
+    return $normalized.Trim()
 }
 
 function Quote-ProcessArgument {
@@ -1009,6 +1021,25 @@ try {
                 }
         )
         $matchMethod = "sourceTitle"
+    }
+
+    # Arr/download-client history can preserve the same release identity with
+    # punctuation or separator differences (dots, spaces, underscores, dashes).
+    # If raw sourceTitle equality found nothing, accept only a UNIQUE normalized
+    # sourceTitle match. Zero matches still fail closed; multiple logical matches
+    # remain ambiguous and are rejected below.
+    if ($matches.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($expectedSourceTitle)) {
+        $expectedSourceTitleNormalized = Normalize-ReacquisitionIdentityTitle $expectedSourceTitle
+        if (-not [string]::IsNullOrWhiteSpace($expectedSourceTitleNormalized)) {
+            $matches = @(
+                $importRecords |
+                    Where-Object {
+                        $candidateSourceTitle = [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default "")
+                        (Normalize-ReacquisitionIdentityTitle $candidateSourceTitle) -eq $expectedSourceTitleNormalized
+                    }
+            )
+            $matchMethod = "sourceTitleNormalized"
+        }
     }
 
     if ($matches.Count -eq 0) {

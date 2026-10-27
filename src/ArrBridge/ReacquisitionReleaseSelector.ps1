@@ -89,7 +89,13 @@ function Test-ReacquisitionDiskOnlyRejection {
 }
 
 function Get-ReacquisitionPredictedCandidatePool {
-    param([Parameter(Mandatory = $true)][object[]]$Releases)
+    param(
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Releases = @()
+    )
+
+    $Releases = @($Releases | Where-Object { $null -ne $_ })
 
     # Preserve Radarr's original release ordering while predicting what will be
     # eligible once the current MovieFile is removed. A release belongs in the
@@ -208,10 +214,14 @@ function Get-DolbyVisionReplacementEvidence {
 
 function Select-ReacquisitionRelease {
     param(
-        [Parameter(Mandatory = $true)][object[]]$Releases,
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Releases = @(),
         [string[]]$TriggerFindingCodes = @(),
         $Chain = $null
     )
+
+    $Releases = @($Releases | Where-Object { $null -ne $_ })
 
     $isDolbyVisionReacquisition = ($TriggerFindingCodes -contains "video.dolby_vision")
     if (-not $isDolbyVisionReacquisition) {

@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.1.1"
+$ExecutorVersion = "0.1.2"
 $IntegrationRoot = $PSScriptRoot
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
 $SelectorPath = Join-Path $IntegrationRoot "ReacquisitionReleaseSelector.ps1"
