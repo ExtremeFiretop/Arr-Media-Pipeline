@@ -13,7 +13,7 @@ param(
 
     [string]$FfprobePath = "ffprobe",
 
-    [string]$PolicyPath = (Join-Path $PSScriptRoot "validator-policy.json"),
+    [string]$PolicyPath = "",
 
     [string]$JsonOut = "",
 
@@ -37,8 +37,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ValidatorVersion = "0.2.9"
+$ValidatorVersion = "0.2.10"
 $SchemaVersion = "1.1"
+
+# Windows PowerShell 5.1 can evaluate script parameter default expressions before
+# $PSScriptRoot is populated. Resolve script-relative defaults only after binding.
+$RuntimeScriptRoot = [string]$PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($RuntimeScriptRoot)) {
+    $invocationPath = [string]$MyInvocation.MyCommand.Path
+    if ([string]::IsNullOrWhiteSpace($invocationPath)) {
+        throw "Unable to resolve MediaValidator script root."
+    }
+    $RuntimeScriptRoot = Split-Path -Parent $invocationPath
+}
+
+if ([string]::IsNullOrWhiteSpace($PolicyPath)) {
+    $PolicyPath = Join-Path $RuntimeScriptRoot "validator-policy.json"
+}
 
 trap {
     $line = $_.InvocationInfo.ScriptLineNumber
@@ -1150,7 +1165,7 @@ $started = Get-Date
 
 if ([string]::IsNullOrWhiteSpace($AuditOutputDirectory)) {
     $stamp = $started.ToString("yyyyMMdd-HHmmss")
-    $AuditOutputDirectory = Join-Path $PSScriptRoot ("audit-" + $stamp)
+    $AuditOutputDirectory = Join-Path $RuntimeScriptRoot ("audit-" + $stamp)
 }
 
 if (-not (Test-Path -LiteralPath $AuditOutputDirectory)) {

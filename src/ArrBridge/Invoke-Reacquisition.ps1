@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.2.8"
+$ExecutorVersion = "0.2.9"
 $IntegrationRoot = $PSScriptRoot
 $ValidatorRoot = Split-Path -Parent $IntegrationRoot
 $ValidatorPath = Join-Path $ValidatorRoot "MediaValidator.ps1"
@@ -323,6 +323,12 @@ function Get-HistoryFileId {
     if ($null -eq $raw) {
         $raw = Get-PropertyValue -Object $data -Name "FileId" -Default $null
     }
+    if ($null -eq $raw) {
+        $raw = Get-PropertyValue -Object $data -Name "movieFileId" -Default $null
+    }
+    if ($null -eq $raw) {
+        $raw = Get-PropertyValue -Object $data -Name "episodeFileId" -Default $null
+    }
 
     $parsed = 0
     if ([int]::TryParse([string]$raw, [ref]$parsed)) {
@@ -371,6 +377,92 @@ function Add-UniqueHistoryRecords {
         }
 
         [void]$Target.Add($record)
+    }
+}
+
+function Resolve-ReacquisitionImportHistoryMatch {
+    param(
+        [object[]]$ImportRecords,
+        [int]$FileId,
+        [string]$MediaPath,
+        [string]$DownloadId,
+        [string]$ReleaseTitle,
+        [string]$SceneName
+    )
+
+    $records = @($ImportRecords)
+
+    # Strongest match: Arr records the imported media-file ID in history data.
+    $matches = @(
+        $records |
+            Where-Object {
+                (Get-HistoryFileId $_) -eq $FileId
+            }
+    )
+    $matchMethod = "fileId"
+
+    if ($matches.Count -ne 1) {
+        $matches = @(
+            $records |
+                Where-Object {
+                    Test-PathEquivalent (Get-HistoryImportedPath $_) $MediaPath
+                }
+        )
+        $matchMethod = "importedPath"
+    }
+
+    if ($matches.Count -ne 1 -and -not [string]::IsNullOrWhiteSpace($DownloadId)) {
+        $matches = @(
+            $records |
+                Where-Object {
+                    [string]::Equals(
+                        [string](Get-PropertyValue -Object $_ -Name "downloadId" -Default ""),
+                        $DownloadId,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    )
+                }
+        )
+        $matchMethod = "downloadId"
+    }
+
+    $expectedSourceTitle = if (-not [string]::IsNullOrWhiteSpace($ReleaseTitle)) { $ReleaseTitle } else { $SceneName }
+
+    if ($matches.Count -ne 1 -and -not [string]::IsNullOrWhiteSpace($expectedSourceTitle)) {
+        $matches = @(
+            $records |
+                Where-Object {
+                    [string]::Equals(
+                        [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default ""),
+                        $expectedSourceTitle,
+                        [System.StringComparison]::OrdinalIgnoreCase
+                    )
+                }
+        )
+        $matchMethod = "sourceTitle"
+    }
+
+    # Arr/download-client history can preserve the same release identity with
+    # punctuation or separator differences (dots, spaces, underscores, dashes).
+    # If raw sourceTitle equality found nothing, accept only a UNIQUE normalized
+    # sourceTitle match. Zero matches still fail closed; multiple logical matches
+    # remain ambiguous and are rejected by the caller.
+    if ($matches.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($expectedSourceTitle)) {
+        $expectedSourceTitleNormalized = Normalize-ReacquisitionIdentityTitle $expectedSourceTitle
+        if (-not [string]::IsNullOrWhiteSpace($expectedSourceTitleNormalized)) {
+            $matches = @(
+                $records |
+                    Where-Object {
+                        $candidateSourceTitle = [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default "")
+                        (Normalize-ReacquisitionIdentityTitle $candidateSourceTitle) -eq $expectedSourceTitleNormalized
+                    }
+            )
+            $matchMethod = "sourceTitleNormalized"
+        }
+    }
+
+    return [pscustomobject]@{
+        matches = @($matches)
+        matchMethod = $matchMethod
     }
 }
 
@@ -974,71 +1066,87 @@ try {
         )
     }
 
-    # Strongest match: Arr records the imported media-file ID in history data.
-    $matches = @(
-        $importRecords |
-            Where-Object {
-                (Get-HistoryFileId $_) -eq $fileId
+    $importResolution = Resolve-ReacquisitionImportHistoryMatch `
+        -ImportRecords $importRecords `
+        -FileId $fileId `
+        -MediaPath $result.mediaPath `
+        -DownloadId $downloadId `
+        -ReleaseTitle $releaseTitle `
+        -SceneName $sceneName
+
+    $matches = @($importResolution.matches)
+    $matchMethod = [string]$importResolution.matchMethod
+
+    # Radarr/Sonarr Connect can fire before the corresponding
+    # downloadFolderImported history row is committed. Fresh production evidence
+    # showed the exact matching row appearing roughly 5-9 seconds after the
+    # Connect event. Preserve strong identity matching and use a bounded,
+    # read-only consistency refresh rather than weakening identity.
+    if ($matches.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($downloadId)) {
+        $historyConsistencyMaxChecks = 7
+        $historyConsistencyDelaySeconds = 2
+
+        for (
+            $historyConsistencyCheck = 1;
+            $historyConsistencyCheck -le $historyConsistencyMaxChecks -and $matches.Count -eq 0;
+            $historyConsistencyCheck++
+        ) {
+            if ($historyConsistencyCheck -gt 1) {
+                Start-Sleep -Seconds $historyConsistencyDelaySeconds
             }
-    )
-    $matchMethod = "fileId"
 
-    if ($matches.Count -ne 1) {
-        $matches = @(
-            $importRecords |
-                Where-Object {
-                    Test-PathEquivalent (Get-HistoryImportedPath $_) $result.mediaPath
-                }
-        )
-        $matchMethod = "importedPath"
-    }
+            $encodedRefreshDownloadId = [System.Uri]::EscapeDataString($downloadId)
+            $historyRefreshUri = $connection.baseUrl +
+                "/api/v3/history?page=1&pageSize=100&sortKey=date&sortDirection=descending&downloadId=$encodedRefreshDownloadId"
 
-    if ($matches.Count -ne 1 -and -not [string]::IsNullOrWhiteSpace($downloadId)) {
-        $matches = @(
-            $importRecords |
-                Where-Object {
-                    [string]::Equals(
-                        [string](Get-PropertyValue -Object $_ -Name "downloadId" -Default ""),
-                        $downloadId,
-                        [System.StringComparison]::OrdinalIgnoreCase
-                    )
-                }
-        )
-        $matchMethod = "downloadId"
-    }
+            try {
+                $historyRefreshResponse = Invoke-RestMethod `
+                    -Uri $historyRefreshUri `
+                    -Headers $headers `
+                    -Method Get `
+                    -TimeoutSec 30
 
-    $expectedSourceTitle = if (-not [string]::IsNullOrWhiteSpace($releaseTitle)) { $releaseTitle } else { $sceneName }
+                $historyRefreshRecords = @(ConvertTo-RecordArray -Response $historyRefreshResponse)
+                Add-UniqueHistoryRecords -Target $historyCandidates -Records $historyRefreshRecords
 
-    if ($matches.Count -ne 1 -and -not [string]::IsNullOrWhiteSpace($expectedSourceTitle)) {
-        $matches = @(
-            $importRecords |
-                Where-Object {
-                    [string]::Equals(
-                        [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default ""),
-                        $expectedSourceTitle,
-                        [System.StringComparison]::OrdinalIgnoreCase
-                    )
-                }
-        )
-        $matchMethod = "sourceTitle"
-    }
+                [void]$historySources.Add([ordered]@{
+                    source = "global_history_downloadId_consistency_refresh"
+                    uri = $historyRefreshUri
+                    check = $historyConsistencyCheck
+                    recordCount = $historyRefreshRecords.Count
+                })
+            }
+            catch {
+                [void]$historySources.Add([ordered]@{
+                    source = "global_history_downloadId_consistency_refresh"
+                    uri = $historyRefreshUri
+                    check = $historyConsistencyCheck
+                    recordCount = 0
+                    error = $_.Exception.Message
+                })
+            }
 
-    # Arr/download-client history can preserve the same release identity with
-    # punctuation or separator differences (dots, spaces, underscores, dashes).
-    # If raw sourceTitle equality found nothing, accept only a UNIQUE normalized
-    # sourceTitle match. Zero matches still fail closed; multiple logical matches
-    # remain ambiguous and are rejected below.
-    if ($matches.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($expectedSourceTitle)) {
-        $expectedSourceTitleNormalized = Normalize-ReacquisitionIdentityTitle $expectedSourceTitle
-        if (-not [string]::IsNullOrWhiteSpace($expectedSourceTitleNormalized)) {
-            $matches = @(
-                $importRecords |
+            $importRecords = @(
+                $historyCandidates |
                     Where-Object {
-                        $candidateSourceTitle = [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default "")
-                        (Normalize-ReacquisitionIdentityTitle $candidateSourceTitle) -eq $expectedSourceTitleNormalized
+                        [string]::Equals(
+                            [string](Get-PropertyValue -Object $_ -Name "eventType" -Default ""),
+                            "downloadFolderImported",
+                            [System.StringComparison]::OrdinalIgnoreCase
+                        )
                     }
             )
-            $matchMethod = "sourceTitleNormalized"
+
+            $importResolution = Resolve-ReacquisitionImportHistoryMatch `
+                -ImportRecords $importRecords `
+                -FileId $fileId `
+                -MediaPath $result.mediaPath `
+                -DownloadId $downloadId `
+                -ReleaseTitle $releaseTitle `
+                -SceneName $sceneName
+
+            $matches = @($importResolution.matches)
+            $matchMethod = [string]$importResolution.matchMethod
         }
     }
 

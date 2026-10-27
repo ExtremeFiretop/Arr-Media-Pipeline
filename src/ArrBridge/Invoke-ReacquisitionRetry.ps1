@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.1.8"
+$ExecutorVersion = "0.1.9"
 $IntegrationRoot = $PSScriptRoot
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
 $SelectorPath = Join-Path $IntegrationRoot "ReacquisitionReleaseSelector.ps1"
@@ -399,7 +399,14 @@ try {
     }
     else {
         $preSearch = Get-ReleaseSearch -Connection $connection -MovieId $movieId
-        $prePool = if ($isDolbyVisionReacquisition) { @($preSearch.predicted) } else { @($preSearch.diskOnly) }
+        $prePool = @(
+            if ($isDolbyVisionReacquisition) {
+                $preSearch.predicted
+            }
+            else {
+                $preSearch.diskOnly
+            }
+        )
         $preSelection = Select-ReacquisitionRelease -Releases $prePool -TriggerFindingCodes $triggerFindingCodes -Chain $chain
         $result.selectionStrategy = $preSelection.strategy
         $result.releaseSelection = ConvertTo-ReacquisitionReleaseSummary -Candidate $preSelection.selected
