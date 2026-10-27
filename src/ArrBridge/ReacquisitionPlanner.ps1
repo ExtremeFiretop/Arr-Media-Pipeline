@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$PlannerVersion = "0.1.2"
+$PlannerVersion = "0.1.3"
 
 function Get-PropertyValue {
     param(
@@ -275,12 +275,14 @@ $supportedCodes = @(
     "probe.diagnostic_error"
 )
 
-$triggerFindings = if ($automaticEscalationApplied) {
-    @($normalizeFindings)
-}
-else {
-    @($allFindings | Where-Object { $supportedCodes -contains $_ })
-}
+$triggerFindings = @(
+    if ($automaticEscalationApplied) {
+        $normalizeFindings
+    }
+    else {
+        $allFindings | Where-Object { $supportedCodes -contains $_ }
+    }
+)
 $unsupportedReacquireFindings = @(
     $allFindings |
         Where-Object {
