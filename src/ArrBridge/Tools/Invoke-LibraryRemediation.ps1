@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$CommandVersion = "0.3.0"
+$CommandVersion = "0.3.1"
 $ToolsRoot = $PSScriptRoot
 $IntegrationRoot = Split-Path -Parent $ToolsRoot
 $ConfigPath = Join-Path $IntegrationRoot "integration-config.json"
@@ -268,6 +268,28 @@ function Get-RetryTargetKeys {
         }
     }
     return $targets
+}
+
+function Get-RadarrRetryChainDisposition {
+    param([int]$MovieId)
+    if ($MovieId -le 0) { return $null }
+    $chainPath = Join-Path $IntegrationRoot ("Reacquisition\chains\Radarr-{0}.json" -f $MovieId)
+    if (-not (Test-Path -LiteralPath $chainPath -PathType Leaf)) { return $null }
+    try {
+        $chain = Get-Content -LiteralPath $chainPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $status = [string](Get-Prop $chain "status" "")
+        $suppress = $status -in @(
+            "ACTIVE",
+            "STARTED",
+            "QUARANTINED_REPLACEMENT_STARTED",
+            "COMPLETED",
+            "COMPLETED_SUCCESS",
+            "COMPLETED_LOCAL_REMEDIATION",
+            "RETIRED_AFTER_SUCCESS"
+        )
+        return [pscustomobject]@{ status=$status; suppressRetry=$suppress; chainPath=$chainPath }
+    }
+    catch { return $null }
 }
 
 function Get-RunSignature {
@@ -545,6 +567,7 @@ $skipped = 0
 $errors = 0
 $workerKicks = 0
 $lastWorkerStart = $null
+$retrySuppressedByChain = 0
 Save-RunMetadata -Path $runPath -Status "RUNNING" -RunRoot $runRoot -Signature $signature -Processed 0 -Submitted 0 -Skipped 0 -Errors 0 -IsRetryActionable ([bool]$RetryActionable) -RetrySourceRunRoot $retrySourceRunRoot
 
 function Record-Result {
@@ -597,6 +620,13 @@ try {
             $fileId = if ($null -ne $file) { [int](Get-Prop $file "id" 0) } else { 0 }
             $key = "Radarr:movieFile:$fileId"
             if ($RetryActionable -and -not $retryTargetKeys.ContainsKey($key)) { continue }
+            if ($RetryActionable) {
+                $chainDisposition = Get-RadarrRetryChainDisposition -MovieId $id
+                if ($null -ne $chainDisposition -and [bool]$chainDisposition.suppressRetry) {
+                    $retrySuppressedByChain++
+                    continue
+                }
+            }
             if ($fileId -gt 0 -and $completedKeys.ContainsKey($key)) { continue }
             $processed++
             $title = [string](Get-Prop $movie "title" "")
@@ -759,6 +789,7 @@ try {
         retryActionable = [bool]$RetryActionable
         retrySourceRunRoot = if ([string]::IsNullOrWhiteSpace($retrySourceRunRoot)) { $null } else { $retrySourceRunRoot }
         retryTargetCount = if ($RetryActionable) { $retryTargetKeys.Count } else { 0 }
+        retrySuppressedByActiveOrCompletedChain = $retrySuppressedByChain
         processedThisInvocation = $processed
         submittedThisInvocation = $submitted
         skippedThisInvocation = $skipped
@@ -787,6 +818,7 @@ try {
     if ($RetryActionable) {
         Write-Host ("Retry from: {0}" -f $retrySourceRunRoot)
         Write-Host ("Retry set : {0} actionable item(s)" -f $retryTargetKeys.Count)
+        Write-Host ("Chain skip: {0} active/completed item(s)" -f $retrySuppressedByChain)
     }
     if ($outcomeCounts.Count -gt 0) {
         Write-Host "Outcomes  :"

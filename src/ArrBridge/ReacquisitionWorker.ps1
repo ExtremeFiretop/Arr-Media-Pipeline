@@ -4,7 +4,7 @@ param([ValidateRange(0,10000)][int]$MaxJobs = 0)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$WorkerVersion = "0.2.0"
+$WorkerVersion = "0.2.2"
 $IntegrationRoot = $PSScriptRoot
 $QueueCommonPath = Join-Path $IntegrationRoot "ReacquisitionQueueCommon.ps1"
 $ChainCommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
@@ -279,7 +279,76 @@ $held=$false
 try {
     $held=$mutex.WaitOne(0)
     if (-not $held) { exit 0 }
-    $processed=0
+    
+function New-DirectTerminalDvChainFromPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$PlanPath,
+        [Parameter(Mandatory = $true)]$Plan,
+        [Parameter(Mandatory = $true)][int]$MovieId
+    )
+
+    $loop = Get-ReacquisitionSafePropertyValue $Plan "loopPrevention" $null
+    $loopKey = [string](Get-ReacquisitionSafePropertyValue $loop "loopKey" "")
+    $maxAttempts = [int](Get-ReacquisitionSafePropertyValue $loop "maxAutomaticAttempts" 3)
+    if ($maxAttempts -le 0) { $maxAttempts = 3 }
+    $snapshot = Get-ReacquisitionSafePropertyValue $Plan "sourceSnapshot" $null
+    $release = Get-ReacquisitionSafePropertyValue $Plan "releaseIdentity" $null
+    $mediaPath = [string](Get-ReacquisitionSafePropertyValue $Plan "mediaPath" "")
+    if ([string]::IsNullOrWhiteSpace($loopKey) -or [string]::IsNullOrWhiteSpace($mediaPath)) {
+        throw "Cannot synthesize terminal DV chain from an incomplete plan."
+    }
+
+    $chainPath = Get-ReacquisitionChainPath -IntegrationRoot $IntegrationRoot -Source "Radarr" -EntityId $MovieId
+    $chainId = "radarr-{0}-no-candidate-{1}" -f $MovieId,$loopKey.Substring(0,[Math]::Min(12,$loopKey.Length))
+    $now = [DateTime]::UtcNow.ToString("o")
+    $attempts = @()
+    for ($n=1; $n -le $maxAttempts; $n++) {
+        $attempts += [pscustomobject][ordered]@{
+            attemptNumber = $n
+            loopKey = $loopKey
+            releaseTitle = [string](Get-ReacquisitionSafePropertyValue $release "releaseTitle" "")
+            releaseGroup = [string](Get-ReacquisitionSafePropertyValue $release "releaseGroup" "")
+            disposition = "NO_VIABLE_REPLACEMENT_CANDIDATE"
+            quarantinePath = $null
+        }
+    }
+
+    $chain = [pscustomobject][ordered]@{
+        schemaVersion = "1.0"
+        chainVersion = "direct-terminal-dv-1.0"
+        chainId = $chainId
+        source = "Radarr"
+        entityId = $MovieId
+        status = "TERMINAL_REVIEW_REQUIRED"
+        maxAttempts = $maxAttempts
+        failedAttemptCount = $maxAttempts
+        createdUtc = $now
+        updatedUtc = $now
+        rollback = [pscustomobject][ordered]@{
+            originalLoopKey = $loopKey
+            path = $mediaPath
+            lengthBytes = [int64](Get-ReacquisitionSafePropertyValue $snapshot "lengthBytes" -1)
+            streamFingerprint = [string](Get-ReacquisitionSafePropertyValue $snapshot "streamFingerprint" "")
+            releaseTitle = [string](Get-ReacquisitionSafePropertyValue $release "releaseTitle" "")
+            releaseGroup = [string](Get-ReacquisitionSafePropertyValue $release "releaseGroup" "")
+            sourcePlanPath = [System.IO.Path]::GetFullPath($PlanPath)
+            status = "RESTORED_TO_LIBRARY_TERMINAL"
+            restoredUtc = $now
+            verifiedUtc = $now
+        }
+        attempts = @($attempts)
+        terminalReason = "no_viable_replacement_after_candidate_searches"
+    }
+
+    $dir = Split-Path -Parent $chainPath
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $tmp = $chainPath + ".tmp-" + [guid]::NewGuid().ToString("N")
+    $chain | ConvertTo-Json -Depth 60 | Set-Content -LiteralPath $tmp -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $chainPath -Force
+    return [pscustomobject]@{ chainPath=$chainPath; chainId=$chainId }
+}
+
+$processed=0
     while ($MaxJobs -eq 0 -or $processed -lt $MaxJobs) {
         $pending = @(Get-ChildItem -LiteralPath $paths.pending -Filter "*.json" -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc | Select-Object -First 1)
         if ($pending.Count -eq 0) { break }
@@ -314,30 +383,59 @@ try {
                 }
                 $plan=Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 $loop=[string](Get-ReacquisitionSafePropertyValue (Get-ReacquisitionSafePropertyValue $plan "loopPrevention" $null) "loopKey" "")
-                $prePath=New-ResultPath $jobId "markfailed-preflight"
-                $pre=Invoke-JsonScript "Invoke-Reacquisition.ps1" @("-PlanPath",$planPath,"-SuppressNativeRedownload") $prePath ($jobId+"-markfailed-pre")
-                $preStatus=[string](Get-ReacquisitionSafePropertyValue $pre.result "status" "FAILED")
-                if ($preStatus -ne "DRY_RUN_READY") {
-                    Complete-WorkerJob $job $runningPath "BLOCKED" "MARK_FAILED_PREFLIGHT" $preStatus ([string](Get-ReacquisitionSafePropertyValue $pre.result "reason" "preflight_not_ready")) $prePath; continue
+                $releaseIdentity=Get-ReacquisitionSafePropertyValue $plan "releaseIdentity" $null
+                $initialBlocklistMode=[string](Get-ReacquisitionSafePropertyValue $releaseIdentity "initialBlocklistMode" "EXACT_RELEASE")
+
+                if ($initialBlocklistMode -ne "SKIP_UNAVAILABLE_LEGACY_IDENTITY") {
+                    $prePath=New-ResultPath $jobId "markfailed-preflight"
+                    $pre=Invoke-JsonScript "Invoke-Reacquisition.ps1" @("-PlanPath",$planPath,"-SuppressNativeRedownload") $prePath ($jobId+"-markfailed-pre")
+                    $preStatus=[string](Get-ReacquisitionSafePropertyValue $pre.result "status" "FAILED")
+                    $preReason=[string](Get-ReacquisitionSafePropertyValue $pre.result "reason" "")
+                    $alreadyBlocked=($preStatus -eq "BLOCKED" -and $preReason -eq "current_release_already_blocklisted")
+                    if ($preStatus -ne "DRY_RUN_READY" -and -not $alreadyBlocked) {
+                        Complete-WorkerJob $job $runningPath "BLOCKED" "MARK_FAILED_PREFLIGHT" $preStatus $preReason $prePath; continue
+                    }
+                    if ([string]$job.queueMode -eq "AUTO_DRY_RUN") {
+                        $dryStatus=if ($alreadyBlocked) { "ALREADY_BLOCKLISTED" } else { $preStatus }
+                        Complete-WorkerJob $job $runningPath "COMPLETED" "MARK_FAILED_PREFLIGHT" $dryStatus $null $prePath; continue
+                    }
+                    if (-not $alreadyBlocked) {
+                        if ($null -eq (Get-CurrentWriteSettings)) {
+                            Complete-WorkerJob $job $runningPath "BLOCKED" "MARK_FAILED" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_not_currently_authorized" $prePath; continue
+                        }
+                        Set-JobProperty $job "writeAttempted" $true; Save-Job $job $runningPath
+                        $execPath=New-ResultPath $jobId "markfailed-execute"
+                        $exec=Invoke-JsonScript "Invoke-Reacquisition.ps1" @("-PlanPath",$planPath,"-Execute","-ConfirmLoopKey",$loop,"-SuppressNativeRedownload") $execPath ($jobId+"-markfailed-exec")
+                        $markStatus=[string](Get-ReacquisitionSafePropertyValue $exec.result "status" "FAILED")
+                        if ($markStatus -ne "SUCCESS_SEARCH_SUPPRESSED") {
+                            Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "MARK_FAILED" $markStatus ([string](Get-ReacquisitionSafePropertyValue $exec.result "reason" "automatic_markfailed_did_not_suppress_search")) $execPath; continue
+                        }
+                    }
                 }
-                if ([string]$job.queueMode -eq "AUTO_DRY_RUN") {
-                    Complete-WorkerJob $job $runningPath "COMPLETED" "MARK_FAILED_PREFLIGHT" $preStatus $null $prePath; continue
-                }
-                if ($null -eq (Get-CurrentWriteSettings)) {
-                    Complete-WorkerJob $job $runningPath "BLOCKED" "MARK_FAILED" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_not_currently_authorized" $prePath; continue
-                }
-                Set-JobProperty $job "writeAttempted" $true; Save-Job $job $runningPath
-                $execPath=New-ResultPath $jobId "markfailed-execute"
-                $exec=Invoke-JsonScript "Invoke-Reacquisition.ps1" @("-PlanPath",$planPath,"-Execute","-ConfirmLoopKey",$loop,"-SuppressNativeRedownload") $execPath ($jobId+"-markfailed-exec")
-                $markStatus=[string](Get-ReacquisitionSafePropertyValue $exec.result "status" "FAILED")
-                if ($markStatus -ne "SUCCESS_SEARCH_SUPPRESSED") {
-                    Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "MARK_FAILED" $markStatus ([string](Get-ReacquisitionSafePropertyValue $exec.result "reason" "automatic_markfailed_did_not_suppress_search")) $execPath; continue
-                }
+
                 $qScript=if ($source -eq "Radarr") { "Invoke-ReacquisitionQuarantine.ps1" } else { "Invoke-SonarrReacquisitionQuarantine.ps1" }
-                $qPrePath=New-ResultPath $jobId "quarantine-preflight"
-                $qPre=Invoke-JsonScript $qScript @("-PlanPath",$planPath) $qPrePath ($jobId+"-q-pre")
-                if ([string](Get-ReacquisitionSafePropertyValue $qPre.result "status" "") -ne "DRY_RUN_READY") {
-                    Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "QUARANTINE_PREFLIGHT" ([string](Get-ReacquisitionSafePropertyValue $qPre.result "status" "FAILED")) ([string](Get-ReacquisitionSafePropertyValue $qPre.result "reason" "quarantine_preflight_not_ready")) $qPrePath; continue
+                $qPre=$null; $qPrePath=$null
+                for ($candidateCheck=1; $candidateCheck -le 3; $candidateCheck++) {
+                    $qPrePath=New-ResultPath $jobId ("quarantine-preflight-"+$candidateCheck)
+                    $qPre=Invoke-JsonScript $qScript @("-PlanPath",$planPath) $qPrePath ($jobId+"-q-pre-"+$candidateCheck)
+                    $qStatus=[string](Get-ReacquisitionSafePropertyValue $qPre.result "status" "")
+                    $qReason=[string](Get-ReacquisitionSafePropertyValue $qPre.result "reason" "")
+                    if ($qStatus -eq "DRY_RUN_READY" -or $qReason -ne "no_candidates_blocked_only_by_current_disk_file") { break }
+                    if ($candidateCheck -lt 3) { Start-Sleep -Seconds (2*$candidateCheck) }
+                }
+                $qStatus=[string](Get-ReacquisitionSafePropertyValue $qPre.result "status" "")
+                $qReason=[string](Get-ReacquisitionSafePropertyValue $qPre.result "reason" "")
+                if ($qStatus -ne "DRY_RUN_READY") {
+                    if ($source -eq "Radarr" -and $qReason -eq "no_candidates_blocked_only_by_current_disk_file") {
+                        $findings=@(Get-ReacquisitionSafePropertyValue $plan "triggerFindingCodes" @())
+                        if ($findings -contains "video.dolby_vision") {
+                            try { [void](New-DirectTerminalDvChainFromPlan -PlanPath $planPath -Plan $plan -MovieId $entityId) }
+                            catch { Complete-WorkerJob $job $runningPath "REVIEW_REQUIRED" "NO_VIABLE_REPLACEMENT" "CURRENT_FILE_PRESERVED" ("terminal_chain_synthesis_failed: "+$_.Exception.Message) $qPrePath; continue }
+                            Invoke-TerminalDvAutomation $job $runningPath $entityId $jobId; continue
+                        }
+                        Complete-WorkerJob $job $runningPath "REVIEW_REQUIRED" "NO_VIABLE_REPLACEMENT" "CURRENT_FILE_PRESERVED" "no_viable_replacement_current_file_preserved" $qPrePath; continue
+                    }
+                    Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "QUARANTINE_PREFLIGHT" $qStatus $qReason $qPrePath; continue
                 }
                 if ($null -eq (Get-CurrentWriteSettings)) {
                     Complete-WorkerJob $job $runningPath "BLOCKED" "QUARANTINE" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_changed_before_quarantine" $qPrePath; continue
@@ -390,12 +488,45 @@ try {
                     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) { Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY" "PLAN_MISSING" "retry_reacquisition_plan_missing" $null; continue }
                     $plan=Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
                     $loop=[string](Get-ReacquisitionSafePropertyValue (Get-ReacquisitionSafePropertyValue $plan "loopPrevention" $null) "loopKey" "")
+                    $releaseIdentity=Get-ReacquisitionSafePropertyValue $plan "releaseIdentity" $null
+                    $retryBlocklistMode=[string](Get-ReacquisitionSafePropertyValue $releaseIdentity "initialBlocklistMode" "EXACT_RELEASE")
+                    if ($retryBlocklistMode -eq "SKIP_UNAVAILABLE_LEGACY_IDENTITY") {
+                        Complete-WorkerJob $job $runningPath "REVIEW_REQUIRED" "RETRY_MARK_FAILED_PREFLIGHT" "BLOCKED" "replacement_release_identity_unavailable" $planPath; continue
+                    }
+
+                    # A replacement that still validates REACQUIRE must itself be MarkFailed/blocklisted
+                    # before the retry executor is allowed to remove it. This creates the per-loop
+                    # Reacquisition\state proof consumed by Invoke-*ReacquisitionRetry.ps1.
+                    $markPrePath=New-ResultPath $jobId "retry-markfailed-preflight"
+                    $markPre=Invoke-JsonScript "Invoke-Reacquisition.ps1" @("-PlanPath",$planPath,"-SuppressNativeRedownload") $markPrePath ($jobId+"-retry-markfailed-pre")
+                    $markPreStatus=[string](Get-ReacquisitionSafePropertyValue $markPre.result "status" "FAILED")
+                    $markPreReason=[string](Get-ReacquisitionSafePropertyValue $markPre.result "reason" "")
+                    $markAlreadyBlocked=($markPreStatus -eq "BLOCKED" -and $markPreReason -eq "current_release_already_blocklisted")
+                    if ($markPreStatus -ne "DRY_RUN_READY" -and -not $markAlreadyBlocked) {
+                        Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_MARK_FAILED_PREFLIGHT" $markPreStatus $markPreReason $markPrePath; continue
+                    }
+                    if ([string]$job.queueMode -eq "AUTO_DRY_RUN") {
+                        $dryStatus=if ($markAlreadyBlocked) { "ALREADY_BLOCKLISTED" } else { $markPreStatus }
+                        Complete-WorkerJob $job $runningPath "COMPLETED" "RETRY_MARK_FAILED_PREFLIGHT" $dryStatus $null $markPrePath; continue
+                    }
+                    if (-not $markAlreadyBlocked) {
+                        if ($null -eq (Get-CurrentWriteSettings)) {
+                            Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_MARK_FAILED" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_not_currently_authorized" $markPrePath; continue
+                        }
+                        Set-JobProperty $job "writeAttempted" $true; Save-Job $job $runningPath
+                        $markExecPath=New-ResultPath $jobId "retry-markfailed-execute"
+                        $markExec=Invoke-JsonScript "Invoke-Reacquisition.ps1" @("-PlanPath",$planPath,"-Execute","-ConfirmLoopKey",$loop,"-SuppressNativeRedownload") $markExecPath ($jobId+"-retry-markfailed-exec")
+                        $markExecStatus=[string](Get-ReacquisitionSafePropertyValue $markExec.result "status" "FAILED")
+                        if ($markExecStatus -ne "SUCCESS_SEARCH_SUPPRESSED") {
+                            Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "RETRY_MARK_FAILED" $markExecStatus ([string](Get-ReacquisitionSafePropertyValue $markExec.result "reason" "replacement_markfailed_did_not_suppress_search")) $markExecPath; continue
+                        }
+                    }
+
                     $retryScript=if ($source -eq "Radarr") { "Invoke-ReacquisitionRetry.ps1" } else { "Invoke-SonarrReacquisitionRetry.ps1" }
                     $prePath=New-ResultPath $jobId "retry-preflight"
                     $pre=Invoke-JsonScript $retryScript @("-PlanPath",$planPath) $prePath ($jobId+"-retry-pre")
                     $s=[string](Get-ReacquisitionSafePropertyValue $pre.result "status" "FAILED")
                     if ($s -ne "DRY_RUN_READY") { Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_PREFLIGHT" $s ([string](Get-ReacquisitionSafePropertyValue $pre.result "reason" "retry_not_ready")) $prePath; continue }
-                    if ([string]$job.queueMode -eq "AUTO_DRY_RUN") { Complete-WorkerJob $job $runningPath "COMPLETED" "RETRY_PREFLIGHT" $s $null $prePath; continue }
                     if ($null -eq (Get-CurrentWriteSettings)) { Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_not_currently_authorized" $prePath; continue }
                     $cid=[string](Get-ReacquisitionSafePropertyValue $pre.result "chainId" "")
                     Set-JobProperty $job "writeAttempted" $true; Save-Job $job $runningPath

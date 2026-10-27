@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.1.3"
+$ExecutorVersion = "0.1.4"
 $IntegrationRoot = $PSScriptRoot
 $ConfigPath = Join-Path $IntegrationRoot "integration-config.json"
 $StateRoot = Join-Path $IntegrationRoot "Reacquisition\quarantine-state"
@@ -527,6 +527,7 @@ try {
     $loopKey = [string](Get-PropertyValue -Object $loopPrevention -Name "loopKey" -Default "")
     $downloadId = [string](Get-PropertyValue -Object $releaseIdentity -Name "downloadId" -Default "")
     $sourceTitle = [string](Get-PropertyValue -Object $releaseIdentity -Name "releaseTitle" -Default "")
+    $initialBlocklistMode = [string](Get-PropertyValue -Object $releaseIdentity -Name "initialBlocklistMode" -Default "EXACT_RELEASE")
 
     $result.movieId = $movieId
     $result.fileId = $fileId
@@ -586,85 +587,44 @@ try {
         exit 0
     }
 
-    $reacqStatePath = Join-Path `
-        (Join-Path $IntegrationRoot "Reacquisition\state") `
-        ($loopKey + ".json")
-
-    if (-not (Test-Path -LiteralPath $reacqStatePath -PathType Leaf)) {
-        $result.reason = "reacquisition_state_missing"
-        Write-Result ([pscustomobject]$result)
-        exit 0
-    }
-
-    $reacqState = Get-Content -LiteralPath $reacqStatePath -Raw -Encoding UTF8 |
-        ConvertFrom-Json
-
-    $successfulAttempts = @(
-        @(Get-PropertyValue -Object $reacqState -Name "attempts" -Default @()) |
-            Where-Object {
-                [string](Get-PropertyValue -Object $_ -Name "status" -Default "") -in @(
-                    "SUCCESS",
-                    "SUCCESS_RECOVERED",
-                    "SUCCESS_SEARCH_SUPPRESSED"
-                ) -and
-                [bool](Get-PropertyValue -Object $_ -Name "blocklistVerified" -Default $false)
-            }
-    )
-
-    $result.reacquisitionStateVerified = ($successfulAttempts.Count -gt 0)
-
-    if (-not $result.reacquisitionStateVerified) {
-        $result.reason = "successful_reacquisition_blocklist_state_not_found"
-        Write-Result ([pscustomobject]$result)
-        exit 0
-    }
+    $legacyIdentitySkip = ($initialBlocklistMode -eq "SKIP_UNAVAILABLE_LEGACY_IDENTITY")
 
     $blocklistResponse = Invoke-Radarr `
         -Connection $connection `
         -RelativePath ("blocklist/movie?movieId={0}" -f $movieId) `
         -Method GET
 
-    $blocklist = @(
-        Get-RecordArray -Response $blocklistResponse
-    )
+    $blocklist = @(Get-RecordArray -Response $blocklistResponse)
+    $matchingBlocklist = @()
+    if (-not $legacyIdentitySkip -and -not [string]::IsNullOrWhiteSpace($sourceTitle)) {
+        $matchingBlocklist = @(
+            Test-MatchingBlocklist `
+                -Records $blocklist `
+                -MovieId $movieId `
+                -SourceTitle $sourceTitle
+        )
+    }
 
-    $matchingBlocklist = @(
-        Test-MatchingBlocklist `
-            -Records $blocklist `
-            -MovieId $movieId `
-            -SourceTitle $sourceTitle
-    )
-
-    $result.blocklistVerified = ($matchingBlocklist.Count -gt 0)
+    $result.blocklistVerified = if ($legacyIdentitySkip) { $true } else { ($matchingBlocklist.Count -gt 0) }
     $result.blocklist = [ordered]@{
+        mode = $initialBlocklistMode
+        skippedForLegacyIdentity = $legacyIdentitySkip
         recordCount = $blocklist.Count
         matchingCount = $matchingBlocklist.Count
         expectedSourceTitle = $sourceTitle
         expectedSourceTitleNormalized = (Normalize-ReleaseTitle $sourceTitle)
         samples = @(
-            $blocklist |
-                Select-Object -First 5 |
-                ForEach-Object {
-                    [ordered]@{
-                        id = Get-PropertyValue -Object $_ -Name "id"
-                        movieId = Get-PropertyValue -Object $_ -Name "movieId"
-                        sourceTitle = [string](
-                            Get-PropertyValue -Object $_ -Name "sourceTitle" -Default ""
-                        )
-                        sourceTitleNormalized = (
-                            Normalize-ReleaseTitle (
-                                [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default "")
-                            )
-                        )
-                        protocol = [string](
-                            Get-PropertyValue -Object $_ -Name "protocol" -Default ""
-                        )
-                        indexer = [string](
-                            Get-PropertyValue -Object $_ -Name "indexer" -Default ""
-                        )
-                        date = Get-PropertyValue -Object $_ -Name "date"
-                    }
+            $blocklist | Select-Object -First 5 | ForEach-Object {
+                [ordered]@{
+                    id = Get-PropertyValue -Object $_ -Name "id"
+                    movieId = Get-PropertyValue -Object $_ -Name "movieId"
+                    sourceTitle = [string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default "")
+                    sourceTitleNormalized = Normalize-ReleaseTitle ([string](Get-PropertyValue -Object $_ -Name "sourceTitle" -Default ""))
+                    protocol = [string](Get-PropertyValue -Object $_ -Name "protocol" -Default "")
+                    indexer = [string](Get-PropertyValue -Object $_ -Name "indexer" -Default "")
+                    date = Get-PropertyValue -Object $_ -Name "date"
                 }
+            }
         )
     }
 
@@ -672,6 +632,45 @@ try {
         $result.reason = "failed_release_not_currently_blocklisted"
         Write-Result ([pscustomobject]$result)
         exit 0
+    }
+
+    if ($legacyIdentitySkip) {
+        $result.reacquisitionStateVerified = $true
+    }
+    else {
+        $reacqStatePath = Join-Path `
+            (Join-Path $IntegrationRoot "Reacquisition\state") `
+            ($loopKey + ".json")
+
+        if (Test-Path -LiteralPath $reacqStatePath -PathType Leaf) {
+            $reacqState = Get-Content -LiteralPath $reacqStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $successfulAttempts = @(
+                @(Get-PropertyValue -Object $reacqState -Name "attempts" -Default @()) |
+                    Where-Object {
+                        [string](Get-PropertyValue -Object $_ -Name "status" -Default "") -in @(
+                            "SUCCESS",
+                            "SUCCESS_RECOVERED",
+                            "SUCCESS_SEARCH_SUPPRESSED",
+                            "SUCCESS_ALREADY_BLOCKLISTED"
+                        ) -and
+                        [bool](Get-PropertyValue -Object $_ -Name "blocklistVerified" -Default $false)
+                    }
+            )
+            $result.reacquisitionStateVerified = ($successfulAttempts.Count -gt 0)
+        }
+
+        # Idempotence: a strong exact release that is already present in Radarr's
+        # blocklist is sufficient evidence to continue even if the local attempt
+        # state was created by an earlier run/version or has been retired.
+        if (-not $result.reacquisitionStateVerified -and $result.blocklistVerified) {
+            $result.reacquisitionStateVerified = $true
+        }
+
+        if (-not $result.reacquisitionStateVerified) {
+            $result.reason = "successful_reacquisition_blocklist_state_not_found"
+            Write-Result ([pscustomobject]$result)
+            exit 0
+        }
     }
 
     $movie = Invoke-Radarr `

@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.1.6"
+$ExecutorVersion = "0.1.7"
 $IntegrationRoot = $PSScriptRoot
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
 $SelectorPath = Join-Path $IntegrationRoot "ReacquisitionReleaseSelector.ps1"
@@ -258,6 +258,7 @@ $result = [ordered]@{
     streamFingerprintMatches = $false
     arrFileMatches = $false
     reacquisitionStateVerified = $false
+    reacquisitionStateEvidence = $null
     blocklistVerified = $false
     preRemovalSearch = $null
     disposition = "DELETE_RETRY"
@@ -329,19 +330,33 @@ try {
     if (-not $result.arrFileMatches) { $result.reason = "current_arr_file_mismatch"; Write-Result ([pscustomobject]$result); exit 0 }
 
     $reacqStatePath = Join-Path (Join-Path $IntegrationRoot "Reacquisition\state") ($loopKey + ".json")
-    if (-not (Test-Path -LiteralPath $reacqStatePath -PathType Leaf)) { $result.reason = "reacquisition_state_missing"; Write-Result ([pscustomobject]$result); exit 0 }
-    $reacqState = Get-Content -LiteralPath $reacqStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
-    $successfulAttempts = @(@(Get-PropertyValue -Object $reacqState -Name "attempts" -Default @()) | Where-Object {
-        [string](Get-PropertyValue -Object $_ -Name "status" -Default "") -in @("SUCCESS","SUCCESS_RECOVERED","SUCCESS_SEARCH_SUPPRESSED") -and
-        [bool](Get-PropertyValue -Object $_ -Name "blocklistVerified" -Default $false)
-    })
-    $result.reacquisitionStateVerified = ($successfulAttempts.Count -gt 0)
-    if (-not $result.reacquisitionStateVerified) { $result.reason = "successful_reacquisition_blocklist_state_not_found"; Write-Result ([pscustomobject]$result); exit 0 }
+    $reacqStateExists = Test-Path -LiteralPath $reacqStatePath -PathType Leaf
+    if ($reacqStateExists) {
+        $reacqState = Get-Content -LiteralPath $reacqStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $successfulAttempts = @(@(Get-PropertyValue -Object $reacqState -Name "attempts" -Default @()) | Where-Object {
+            [string](Get-PropertyValue -Object $_ -Name "status" -Default "") -in @("SUCCESS","SUCCESS_RECOVERED","SUCCESS_SEARCH_SUPPRESSED") -and
+            [bool](Get-PropertyValue -Object $_ -Name "blocklistVerified" -Default $false)
+        })
+        $result.reacquisitionStateVerified = ($successfulAttempts.Count -gt 0)
+        if ($result.reacquisitionStateVerified) { $result.reacquisitionStateEvidence = "PIPELINE_STATE" }
+    }
 
     $blocklist = @(Get-RecordArray -Response (Invoke-Radarr -Connection $connection -RelativePath ("blocklist/movie?movieId={0}" -f $movieId) -Method GET))
     $matchingBlocklist = @(Test-MatchingBlocklist -Records $blocklist -MovieId $movieId -SourceTitle $sourceTitle)
     $result.blocklistVerified = ($matchingBlocklist.Count -gt 0)
-    if (-not $result.blocklistVerified) { $result.reason = "failed_release_not_currently_blocklisted"; Write-Result ([pscustomobject]$result); exit 0 }
+    if (-not $result.blocklistVerified) {
+        $result.reason = if ($reacqStateExists) { "failed_release_not_currently_blocklisted" } else { "reacquisition_state_missing" }
+        Write-Result ([pscustomobject]$result); exit 0
+    }
+    if (-not $result.reacquisitionStateVerified) {
+        if ($reacqStateExists) {
+            $result.reason = "successful_reacquisition_blocklist_state_not_found"; Write-Result ([pscustomobject]$result); exit 0
+        }
+        # Idempotent recovery path: an exact matching Arr blocklist entry is sufficient proof
+        # when the local state file is absent (for example after an already-blocklisted preflight).
+        $result.reacquisitionStateVerified = $true
+        $result.reacquisitionStateEvidence = "EXACT_BLOCKLIST_ONLY"
+    }
 
     $chainPath = Get-ReacquisitionChainPath -IntegrationRoot $IntegrationRoot -Source "Radarr" -EntityId $movieId
     $result.chainPath = $chainPath

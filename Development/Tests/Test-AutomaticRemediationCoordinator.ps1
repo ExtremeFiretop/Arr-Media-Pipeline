@@ -10,6 +10,7 @@ $checks=@(
     @{Name="Reacquisition executor accepts bound automatic escalation"; Path="Invoke-Reacquisition.ps1"; Marker="automatic_escalation_source_outcome_changed"},
     @{Name="Reacquisition worker normalizes replacement"; Path="ReacquisitionWorker.ps1"; Marker="Invoke-ActiveChainNormalization"},
     @{Name="Reacquisition worker post-normalization completion"; Path="ReacquisitionWorker.ps1"; Marker="success-after-normalization-execute"},
+    @{Name="Active-chain failed replacement MarkFailed handoff"; Path="ReacquisitionWorker.ps1"; Marker="retry-markfailed-preflight"},
     @{Name="Unified existing-library remediation entry exists"; Path="Tools\Invoke-LibraryRemediation.ps1"; Marker="LibraryRemediation"},
     @{Name="Unified library actionable retry exists"; Path="Tools\Invoke-LibraryRemediation.ps1"; Marker="RetryActionable"},
     @{Name="Bridge filters non-actionable reacquisition events"; Path="ReqestraArrBridge.ps1"; Marker="no_reacquisition_outcome_or_active_chain"},

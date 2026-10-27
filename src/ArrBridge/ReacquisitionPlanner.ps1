@@ -17,7 +17,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$PlannerVersion = "0.1.3"
+$PlannerVersion = "0.1.4"
 
 function Get-PropertyValue {
     param(
@@ -357,11 +357,15 @@ if ($effectiveOutcome -eq "REACQUIRE") {
         $status = "BLOCKED"
         $reason = "unsupported_reacquire_finding"
     }
-    elseif ($releaseIdentityStrength -in @("NONE", "WEAK")) {
-        $status = "BLOCKED"
-        $reason = "release_identity_not_strong_enough"
-    }
 }
+
+$initialBlocklistMode = if ($releaseIdentityStrength -in @("NONE", "WEAK")) {
+    "SKIP_UNAVAILABLE_LEGACY_IDENTITY"
+}
+else {
+    "EXACT_RELEASE"
+}
+
 
 $episode = Get-PropertyValue -Object $context -Name "episode"
 $episodeIds = @()
@@ -429,6 +433,8 @@ $result = [pscustomobject][ordered]@{
         sceneName = if ([string]::IsNullOrWhiteSpace($sceneName)) { $null } else { $sceneName }
         releaseGroup = if ([string]::IsNullOrWhiteSpace($releaseGroup)) { $null } else { $releaseGroup }
         indexer = if ([string]::IsNullOrWhiteSpace($indexer)) { $null } else { $indexer }
+        initialBlocklistMode = $initialBlocklistMode
+        initialBlocklistRequired = ($initialBlocklistMode -eq "EXACT_RELEASE")
     }
     loopPrevention = [ordered]@{
         loopKey = $loopKey
