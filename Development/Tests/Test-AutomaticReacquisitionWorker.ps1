@@ -69,7 +69,7 @@ try {
     Add-Test "PASS replacement routes to Sonarr success finalizer" ($worker -match 'Complete-SonarrReacquisitionSuccess\.ps1')
     Add-Test "Bad Radarr replacement routes through guarded retry" ($worker -match 'Invoke-ReacquisitionRetry\.ps1')
     Add-Test "Bad Sonarr replacement routes through guarded retry" ($worker -match 'Invoke-SonarrReacquisitionRetry\.ps1')
-    Add-Test "Worker never retires a NORMALIZE replacement as success" ($worker -match 'WAITING_FOR_NORMALIZATION')
+    Add-Test "NORMALIZE replacement is normalized and revalidated before success finalization" ($worker -match 'elseif\s*\(\$outcome\s*-eq\s*"NORMALIZE"\)\s*\{\s*Invoke-ActiveChainNormalization' -and $worker -match 'New-PostNormalizationBridgeResult' -and $worker -match '\$fresh\.effectiveOutcome\s*-ne\s*"PASS"' -and $worker -match 'SUCCESS_AFTER_NORMALIZATION')
     Add-Test "Terminal Radarr chain can route to terminal DV remediation" ($worker -match 'Invoke-TerminalDvRemediation\.ps1')
     Add-Test "Terminal DV candidate build and promotion are separate phases" ($worker -match 'BuildCandidate' -and $worker -match 'DRY_RUN_READY_REPLACE')
     Add-Test "Worker re-reads automatic write gate before mutations" (([regex]::Matches($worker,'Get-CurrentWriteSettings')).Count -ge 5)
