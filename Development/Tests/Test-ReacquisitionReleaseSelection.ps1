@@ -4,8 +4,11 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-. (Join-Path $PSScriptRoot "ReacquisitionChainCommon.ps1")
-. (Join-Path $PSScriptRoot "ReacquisitionReleaseSelector.ps1")
+$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$IntegrationRoot = Join-Path $Root "Integration"
+
+. (Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1")
+. (Join-Path $IntegrationRoot "ReacquisitionReleaseSelector.ps1")
 
 Write-Host ""
 Write-Host "Reqestra Reacquisition Release Selection Contract Test"

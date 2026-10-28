@@ -9,7 +9,10 @@ Write-Host "Reqestra Terminal Dolby Vision Remediation Contract Test"
 Write-Host "========================================================="
 Write-Host ""
 
-. (Join-Path $PSScriptRoot "TerminalDvRemediationCommon.ps1")
+$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$IntegrationRoot = Join-Path $Root "Integration"
+
+. (Join-Path $IntegrationRoot "TerminalDvRemediationCommon.ps1")
 
 function Decide {
     param(
@@ -46,7 +49,7 @@ function Decide {
         -Profile7LayerType $Profile7LayerType
 }
 
-$invokePath = Join-Path $PSScriptRoot "Invoke-TerminalDvRemediation.ps1"
+$invokePath = Join-Path $IntegrationRoot "Invoke-TerminalDvRemediation.ps1"
 $invokeText = Get-Content -LiteralPath $invokePath -Raw -Encoding UTF8
 
 $p8 = Decide

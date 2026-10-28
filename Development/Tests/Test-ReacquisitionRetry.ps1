@@ -26,8 +26,7 @@ function Get-ReplacementAcquisitionAction {
 
 function Get-PreRemovalCandidatePoolMode {
     param([bool]$IsDolbyVision)
-    if ($IsDolbyVision) { return "APPROVED_PLUS_DISK_ONLY_PREDICTED" }
-    return "DISK_ONLY_BLOCKED"
+    return "APPROVED_PLUS_DISK_ONLY_PREDICTED"
 }
 
 function Get-PostDeleteDecision {
@@ -68,6 +67,10 @@ $tests = @(
     [pscustomobject]@{
         Test = "Dolby Vision pre-removal ranking includes approved plus disk-only predicted candidates"
         Passed = ((Get-PreRemovalCandidatePoolMode $true) -eq "APPROVED_PLUS_DISK_ONLY_PREDICTED")
+    },
+    [pscustomobject]@{
+        Test = "Non-Dolby-Vision pre-removal gate also includes approved plus disk-only predicted candidates"
+        Passed = ((Get-PreRemovalCandidatePoolMode $false) -eq "APPROVED_PLUS_DISK_ONLY_PREDICTED")
     },
     [pscustomobject]@{
         Test = "No approved release restores the single rollback copy"

@@ -10,57 +10,32 @@ $Source = Get-Content -LiteralPath $RetryPath -Raw -Encoding UTF8
 
 $emptySearch = [pscustomobject]@{
     predicted = @()
-    diskOnly = @()
 }
 
-$emptyNonDvPool = @(
-    if ($false) {
-        $emptySearch.predicted
-    }
-    else {
-        $emptySearch.diskOnly
-    }
-)
-
-$emptyDvPool = @(
-    if ($true) {
-        $emptySearch.predicted
-    }
-    else {
-        $emptySearch.diskOnly
-    }
-)
+$emptyPool = @($emptySearch.predicted)
 
 $singleSearch = [pscustomobject]@{
     predicted = @([pscustomobject]@{ guid = "one" })
-    diskOnly = @()
 }
 
-$singlePool = @(
-    if ($true) {
-        $singleSearch.predicted
-    }
-    else {
-        $singleSearch.diskOnly
-    }
-)
+$singlePool = @($singleSearch.predicted)
 
 $tests = @(
     [pscustomobject]@{
-        Test = "retry executor wraps the whole prePool conditional in array syntax"
-        Passed = ($Source -match '(?s)\$prePool\s*=\s*@\(\s*if\s*\(\$isDolbyVisionReacquisition\)')
+        Test = "retry executor array-wraps the full predicted candidate pool"
+        Passed = ($Source -match '\$prePool\s*=\s*@\(\$preSearch\.predicted\)')
     },
     [pscustomobject]@{
-        Test = "empty non-DV branch remains an array with Count 0"
-        Passed = ($emptyNonDvPool.Count -eq 0)
+        Test = "empty predicted pool remains an array with Count 0"
+        Passed = ($emptyPool.Count -eq 0)
     },
     [pscustomobject]@{
-        Test = "empty DV branch remains an array with Count 0"
-        Passed = ($emptyDvPool.Count -eq 0)
-    },
-    [pscustomobject]@{
-        Test = "single candidate branch remains an array with Count 1"
+        Test = "single predicted candidate remains an array with Count 1"
         Passed = ($singlePool.Count -eq 1)
+    },
+    [pscustomobject]@{
+        Test = "non-DV retry no longer excludes already-approved candidates from pre-removal gate"
+        Passed = ($Source -notmatch 'candidatePoolMode\s*=\s*if\s*\(\$isDolbyVisionReacquisition\).*DISK_ONLY_BLOCKED')
     }
 )
 

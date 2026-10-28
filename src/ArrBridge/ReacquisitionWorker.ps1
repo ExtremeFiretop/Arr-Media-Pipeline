@@ -4,7 +4,7 @@ param([ValidateRange(0,10000)][int]$MaxJobs = 0)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$WorkerVersion = "0.2.2"
+$WorkerVersion = "0.2.3"
 $IntegrationRoot = $PSScriptRoot
 $QueueCommonPath = Join-Path $IntegrationRoot "ReacquisitionQueueCommon.ps1"
 $ChainCommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
@@ -503,6 +503,9 @@ $processed=0
                     $markPreReason=[string](Get-ReacquisitionSafePropertyValue $markPre.result "reason" "")
                     $markAlreadyBlocked=($markPreStatus -eq "BLOCKED" -and $markPreReason -eq "current_release_already_blocklisted")
                     if ($markPreStatus -ne "DRY_RUN_READY" -and -not $markAlreadyBlocked) {
+                        if ($markPreReason -eq "exact_import_history_not_found") {
+                            Complete-WorkerJob $job $runningPath "WAITING" "RETRY_MARK_FAILED_PREFLIGHT" "WAITING_HISTORY_CONSISTENCY" $markPreReason $markPrePath; continue
+                        }
                         Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_MARK_FAILED_PREFLIGHT" $markPreStatus $markPreReason $markPrePath; continue
                     }
                     if ([string]$job.queueMode -eq "AUTO_DRY_RUN") {
@@ -526,7 +529,43 @@ $processed=0
                     $prePath=New-ResultPath $jobId "retry-preflight"
                     $pre=Invoke-JsonScript $retryScript @("-PlanPath",$planPath) $prePath ($jobId+"-retry-pre")
                     $s=[string](Get-ReacquisitionSafePropertyValue $pre.result "status" "FAILED")
-                    if ($s -ne "DRY_RUN_READY") { Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_PREFLIGHT" $s ([string](Get-ReacquisitionSafePropertyValue $pre.result "reason" "retry_not_ready")) $prePath; continue }
+                    $preReason=[string](Get-ReacquisitionSafePropertyValue $pre.result "reason" "retry_not_ready")
+                    if ($s -ne "DRY_RUN_READY") {
+                        if ($preReason -eq "current_media_no_longer_requires_reacquisition") {
+                            Complete-WorkerJob $job $runningPath "WAITING" "RETRY_PREFLIGHT" "WAITING_FRESH_REVALIDATION" $preReason $prePath; continue
+                        }
+                        if ($preReason -in @("reacquisition_state_missing","successful_reacquisition_blocklist_state_not_found","failed_release_not_currently_blocklisted")) {
+                            Complete-WorkerJob $job $runningPath "WAITING" "RETRY_PREFLIGHT" "WAITING_STATE_RECONCILIATION" $preReason $prePath; continue
+                        }
+                        if ($preReason -in @("no_predicted_candidates_after_current_file_removal","no_dv_safe_predicted_candidate")) {
+                            if ($source -ne "Radarr") {
+                                Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_PREFLIGHT" $s $preReason $prePath; continue
+                            }
+                            $terminalPrePath=New-ResultPath $jobId "retry-no-candidate-terminal-preflight"
+                            $terminalPre=Invoke-JsonScript $retryScript @("-PlanPath",$planPath,"-TerminalizeNoCandidate") $terminalPrePath ($jobId+"-retry-no-candidate-terminal-pre")
+                            $terminalPreStatus=[string](Get-ReacquisitionSafePropertyValue $terminalPre.result "status" "FAILED")
+                            if ($terminalPreStatus -ne "DRY_RUN_READY") {
+                                Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "NO_VIABLE_REPLACEMENT" $terminalPreStatus ([string](Get-ReacquisitionSafePropertyValue $terminalPre.result "reason" "no_candidate_terminal_preflight_failed")) $terminalPrePath; continue
+                            }
+                            if ([string]$job.queueMode -eq "AUTO_DRY_RUN") {
+                                Complete-WorkerJob $job $runningPath "COMPLETED" "NO_VIABLE_REPLACEMENT_PREFLIGHT" $terminalPreStatus $null $terminalPrePath; continue
+                            }
+                            if ($null -eq (Get-CurrentWriteSettings)) {
+                                Complete-WorkerJob $job $runningPath "BLOCKED" "NO_VIABLE_REPLACEMENT" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_not_currently_authorized" $terminalPrePath; continue
+                            }
+                            $terminalChainId=[string](Get-ReacquisitionSafePropertyValue $terminalPre.result "chainId" "")
+                            Set-JobProperty $job "writeAttempted" $true; Save-Job $job $runningPath
+                            $terminalExecPath=New-ResultPath $jobId "retry-no-candidate-terminal-execute"
+                            $terminalExec=Invoke-JsonScript $retryScript @("-PlanPath",$planPath,"-Execute","-ConfirmChainId",$terminalChainId,"-ConfirmLoopKey",$loop,"-TerminalizeNoCandidate") $terminalExecPath ($jobId+"-retry-no-candidate-terminal-exec")
+                            $terminalExecStatus=[string](Get-ReacquisitionSafePropertyValue $terminalExec.result "status" "FAILED")
+                            if ($terminalExecStatus -eq "TERMINAL_REVIEW_REQUIRED") { Invoke-TerminalDvAutomation $job $runningPath $entityId $jobId; continue }
+                            if ($terminalExecStatus -eq "REVIEW_REQUIRED_ROLLBACK_RESTORED") {
+                                Complete-WorkerJob $job $runningPath "REVIEW_REQUIRED" "NO_VIABLE_REPLACEMENT" $terminalExecStatus ([string](Get-ReacquisitionSafePropertyValue $terminalExec.result "reason" "no_viable_replacement_rollback_restored")) $terminalExecPath; continue
+                            }
+                            Complete-WorkerJob $job $runningPath "RECOVERY_REQUIRED" "NO_VIABLE_REPLACEMENT" $terminalExecStatus ([string](Get-ReacquisitionSafePropertyValue $terminalExec.result "reason" "no_candidate_terminal_execution_failed")) $terminalExecPath; continue
+                        }
+                        Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY_PREFLIGHT" $s $preReason $prePath; continue
+                    }
                     if ($null -eq (Get-CurrentWriteSettings)) { Complete-WorkerJob $job $runningPath "BLOCKED" "RETRY" "AUTO_EXECUTE_GATE_CHANGED" "automatic_write_gate_not_currently_authorized" $prePath; continue }
                     $cid=[string](Get-ReacquisitionSafePropertyValue $pre.result "chainId" "")
                     Set-JobProperty $job "writeAttempted" $true; Save-Job $job $runningPath

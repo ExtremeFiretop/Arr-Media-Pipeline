@@ -44,6 +44,21 @@ function Get-ReacquisitionFailedReleaseContext {
                 $titles += $normalizedTitle
             }
         }
+
+        foreach ($failure in @(Get-PropertyValue -Object $Chain -Name "acquisitionFailures" -Default @())) {
+            $title = [string](Get-PropertyValue -Object $failure -Name "sourceTitle" -Default "")
+            $normalizedTitle = Normalize-ReacquisitionReleaseText $title
+            if (-not [string]::IsNullOrWhiteSpace($normalizedTitle)) {
+                $titles += $normalizedTitle
+            }
+            $group = [string](Get-PropertyValue -Object $failure -Name "releaseGroup" -Default "")
+            if ([string]::IsNullOrWhiteSpace($group) -and $title -match '-([A-Za-z0-9][A-Za-z0-9._]{1,31})$') {
+                $group = $matches[1]
+            }
+            if (-not [string]::IsNullOrWhiteSpace($group)) {
+                $groups += $group.Trim().ToLowerInvariant()
+            }
+        }
     }
 
     return [pscustomobject][ordered]@{

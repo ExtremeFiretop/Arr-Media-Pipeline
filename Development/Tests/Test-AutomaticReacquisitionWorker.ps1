@@ -4,7 +4,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$IntegrationRoot = $PSScriptRoot
+$Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$IntegrationRoot = Join-Path $Root "Integration"
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionQueueCommon.ps1"
 $WorkerPath = Join-Path $IntegrationRoot "ReacquisitionWorker.ps1"
 $BridgePath = Join-Path $IntegrationRoot "ReqestraArrBridge.ps1"

@@ -9,13 +9,15 @@ param(
 
     [string]$ConfirmChainId = "",
 
-    [string]$ConfirmLoopKey = ""
+    [string]$ConfirmLoopKey = "",
+
+    [switch]$TerminalizeNoCandidate
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$ExecutorVersion = "0.1.9"
+$ExecutorVersion = "0.1.10"
 $IntegrationRoot = $PSScriptRoot
 $CommonPath = Join-Path $IntegrationRoot "ReacquisitionChainCommon.ps1"
 $SelectorPath = Join-Path $IntegrationRoot "ReacquisitionReleaseSelector.ps1"
@@ -253,6 +255,7 @@ $result = [ordered]@{
     chainAttemptNumber = $null
     maxChainAttempts = $null
     terminalAfterCurrent = $false
+    forcedNoCandidateTerminal = $false
     rollback = $null
     sourceSnapshotMatches = $false
     streamFingerprintMatches = $false
@@ -399,14 +402,12 @@ try {
     }
     else {
         $preSearch = Get-ReleaseSearch -Connection $connection -MovieId $movieId
-        $prePool = @(
-            if ($isDolbyVisionReacquisition) {
-                $preSearch.predicted
-            }
-            else {
-                $preSearch.diskOnly
-            }
-        )
+        # Use the complete pool that is expected to be eligible after the current
+        # failed MovieFile is removed. This includes releases that are already
+        # approved as well as releases rejected only because of the file on disk.
+        # The older Radarr path looked only at diskOnly for non-DV chains and
+        # could falsely report no candidates while approved releases existed.
+        $prePool = @($preSearch.predicted)
         $preSelection = Select-ReacquisitionRelease -Releases $prePool -TriggerFindingCodes $triggerFindingCodes -Chain $chain
         $result.selectionStrategy = $preSelection.strategy
         $result.releaseSelection = ConvertTo-ReacquisitionReleaseSummary -Candidate $preSelection.selected
@@ -415,12 +416,22 @@ try {
             approvedCandidateCount = $preSearch.approved.Count
             diskOnlyBlockedCandidateCount = $preSearch.diskOnly.Count
             predictedCandidateCount = $preSearch.predicted.Count
-            candidatePoolMode = if ($isDolbyVisionReacquisition) { "PREDICTED_AFTER_CURRENT_FILE_REMOVAL" } else { "DISK_ONLY_BLOCKED" }
+            candidatePoolMode = "PREDICTED_AFTER_CURRENT_FILE_REMOVAL"
             selectionStrategy = $preSelection.strategy
             predictedSelectedCandidate = ConvertTo-ReacquisitionReleaseSummary -Candidate $preSelection.selected
         }
-        if ($prePool.Count -le 0) { $result.reason = "no_predicted_candidates_after_current_file_removal"; Write-Result ([pscustomobject]$result); exit 0 }
-        if ($isDolbyVisionReacquisition -and $null -eq $preSelection.selected) { $result.reason = "no_dv_safe_predicted_candidate"; Write-Result ([pscustomobject]$result); exit 0 }
+        if ($prePool.Count -le 0) {
+            if (-not $TerminalizeNoCandidate) { $result.reason = "no_predicted_candidates_after_current_file_removal"; Write-Result ([pscustomobject]$result); exit 0 }
+            $result.terminalAfterCurrent = $true
+            $result.forcedNoCandidateTerminal = $true
+            $result.disposition = "DELETE_RETRY_TERMINAL_NO_CANDIDATE"
+        }
+        if ($isDolbyVisionReacquisition -and $null -eq $preSelection.selected) {
+            if (-not $TerminalizeNoCandidate) { $result.reason = "no_dv_safe_predicted_candidate"; Write-Result ([pscustomobject]$result); exit 0 }
+            $result.terminalAfterCurrent = $true
+            $result.forcedNoCandidateTerminal = $true
+            $result.disposition = "DELETE_RETRY_TERMINAL_NO_CANDIDATE"
+        }
     }
 
     if (-not $Execute) {
@@ -530,12 +541,20 @@ try {
                 loopKey = $loopKey
                 releaseTitle = $sourceTitle
                 releaseGroup = [string](Get-PropertyValue -Object $releaseIdentity -Name "releaseGroup" -Default "")
-                disposition = "FAILED_RETRY_DELETED_TERMINAL_ROLLBACK_RESTORED"
+                disposition = if ($result.forcedNoCandidateTerminal) { "FAILED_RETRY_DELETED_NO_CANDIDATE_ROLLBACK_RESTORED" } else { "FAILED_RETRY_DELETED_TERMINAL_ROLLBACK_RESTORED" }
                 deletedUtc = [DateTime]::UtcNow.ToString("o")
             }
             $chain.attempts = @($attempts)
             $chain.failedAttemptCount = $failedAttemptCount + 1
-            $chain.status = "TERMINAL_REVIEW_REQUIRED"
+            if ($result.forcedNoCandidateTerminal) {
+                $chain.maxAttempts = $chain.failedAttemptCount
+                $result.maxChainAttempts = $chain.failedAttemptCount
+                $chain | Add-Member -NotePropertyName "terminalReason" -NotePropertyValue "no_viable_replacement_after_candidate_searches" -Force
+                $chain.status = if ($isDolbyVisionReacquisition) { "TERMINAL_REVIEW_REQUIRED" } else { "REVIEW_REQUIRED" }
+            }
+            else {
+                $chain.status = "TERMINAL_REVIEW_REQUIRED"
+            }
             $chain.updatedUtc = [DateTime]::UtcNow.ToString("o")
 
             $rollbackState = Get-PropertyValue -Object $chain -Name "rollback"
@@ -548,14 +567,20 @@ try {
             $rollbackState | Add-Member -NotePropertyName "restoredUtc" -NotePropertyValue ([DateTime]::UtcNow.ToString("o")) -Force
             Write-AtomicJson -Path $chainPath -Object $chain
 
-            $transaction.status = "TERMINAL_REVIEW_REQUIRED"
-            $transaction.stage = "MAX_CHAIN_ATTEMPTS_REACHED_ROLLBACK_RESTORED"
+            $transaction.status = if ($result.forcedNoCandidateTerminal -and -not $isDolbyVisionReacquisition) { "REVIEW_REQUIRED" } else { "TERMINAL_REVIEW_REQUIRED" }
+            $transaction.stage = if ($result.forcedNoCandidateTerminal) { "NO_CANDIDATES_TERMINAL_ROLLBACK_RESTORED" } else { "MAX_CHAIN_ATTEMPTS_REACHED_ROLLBACK_RESTORED" }
             $transaction.updatedUtc = [DateTime]::UtcNow.ToString("o")
             $transaction.completedUtc = [DateTime]::UtcNow.ToString("o")
             Write-AtomicJson -Path $statePath -Object $transaction
 
-            $result.status = "TERMINAL_REVIEW_REQUIRED"
-            $result.reason = "maximum_chain_attempts_reached_rollback_restored"
+            if ($result.forcedNoCandidateTerminal -and -not $isDolbyVisionReacquisition) {
+                $result.status = "REVIEW_REQUIRED_ROLLBACK_RESTORED"
+                $result.reason = "no_viable_replacement_rollback_restored"
+            }
+            else {
+                $result.status = "TERMINAL_REVIEW_REQUIRED"
+                $result.reason = if ($result.forcedNoCandidateTerminal) { "no_viable_replacement_rollback_restored" } else { "maximum_chain_attempts_reached_rollback_restored" }
+            }
             Write-Result ([pscustomobject]$result)
             exit 0
         }
